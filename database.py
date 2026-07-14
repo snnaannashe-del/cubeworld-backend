@@ -18,27 +18,37 @@ def init_db():
     conn = get_db()
     conn.executescript("""
     CREATE TABLE IF NOT EXISTS users (
-        user_key    TEXT PRIMARY KEY,
-        tier        TEXT NOT NULL DEFAULT 'free',
-        balance     INTEGER NOT NULL DEFAULT 250,
-        xp          INTEGER NOT NULL DEFAULT 0,
-        streak      INTEGER NOT NULL DEFAULT 0,
+        user_key     TEXT PRIMARY KEY,
+        tier         TEXT NOT NULL DEFAULT 'free',
+        balance      INTEGER NOT NULL DEFAULT 250,
+        xp           INTEGER NOT NULL DEFAULT 0,
+        streak       INTEGER NOT NULL DEFAULT 0,
         last_checkin TEXT DEFAULT '',
-        created_at  INTEGER NOT NULL
+        created_at   INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS wallets (
+        user_key       TEXT PRIMARY KEY,
+        eth_address    TEXT UNIQUE,
+        hd_address     TEXT,
+        cube_balance   TEXT DEFAULT '0',
+        synced_at      INTEGER DEFAULT 0,
+        linked_at      INTEGER DEFAULT 0,
+        FOREIGN KEY (user_key) REFERENCES users(user_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_wallets_eth ON wallets(eth_address);
     CREATE TABLE IF NOT EXISTS posts (
-        id           INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_key     TEXT NOT NULL,
-        author       TEXT NOT NULL,
-        text         TEXT NOT NULL,
-        post_type    TEXT NOT NULL DEFAULT 'text',
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_key        TEXT NOT NULL,
+        author          TEXT NOT NULL,
+        text            TEXT NOT NULL,
+        post_type       TEXT NOT NULL DEFAULT 'text',
         react_fire      INTEGER NOT NULL DEFAULT 0,
         react_rocket    INTEGER NOT NULL DEFAULT 0,
         react_like      INTEGER NOT NULL DEFAULT 0,
         react_heart     INTEGER NOT NULL DEFAULT 0,
         react_eyes      INTEGER NOT NULL DEFAULT 0,
         react_thinking  INTEGER NOT NULL DEFAULT 0,
-        created_at   INTEGER NOT NULL,
+        created_at      INTEGER NOT NULL,
         FOREIGN KEY (user_key) REFERENCES users(user_key)
     );
     CREATE INDEX IF NOT EXISTS idx_posts_created ON posts(created_at DESC);
@@ -61,29 +71,47 @@ def init_db():
         FOREIGN KEY (user_key) REFERENCES users(user_key)
     );
     CREATE INDEX IF NOT EXISTS idx_txs_user ON wallet_txs(user_key, created_at DESC);
+    CREATE TABLE IF NOT EXISTS blockchain_txs (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        tx_hash      TEXT UNIQUE,
+        user_key     TEXT NOT NULL,
+        eth_address  TEXT NOT NULL,
+        tx_type      TEXT NOT NULL,
+        amount_wei   TEXT NOT NULL,
+        amount_cube  REAL NOT NULL,
+        reason       TEXT NOT NULL DEFAULT '',
+        status       TEXT NOT NULL DEFAULT 'pending',
+        block_number INTEGER DEFAULT 0,
+        gas_used     INTEGER DEFAULT 0,
+        created_at   INTEGER NOT NULL,
+        confirmed_at INTEGER DEFAULT 0,
+        FOREIGN KEY (user_key) REFERENCES users(user_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_btxs_user ON blockchain_txs(user_key, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_btxs_hash ON blockchain_txs(tx_hash);
     CREATE TABLE IF NOT EXISTS signals (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_key    TEXT NOT NULL,
-        author      TEXT NOT NULL,
-        pair        TEXT NOT NULL,
-        direction   TEXT NOT NULL,
-        entry       TEXT NOT NULL,
-        tp          TEXT NOT NULL,
-        sl          TEXT NOT NULL,
-        react_rocket INTEGER NOT NULL DEFAULT 0,
-        react_fire   INTEGER NOT NULL DEFAULT 0,
-        created_at  INTEGER NOT NULL
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_key      TEXT NOT NULL,
+        author        TEXT NOT NULL,
+        pair          TEXT NOT NULL,
+        direction     TEXT NOT NULL,
+        entry         TEXT NOT NULL,
+        tp            TEXT NOT NULL,
+        sl            TEXT NOT NULL,
+        react_rocket  INTEGER NOT NULL DEFAULT 0,
+        react_fire    INTEGER NOT NULL DEFAULT 0,
+        created_at    INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_signals_created ON signals(created_at DESC);
     CREATE TABLE IF NOT EXISTS groups (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        name        TEXT NOT NULL,
-        description TEXT NOT NULL DEFAULT '',
-        icon        TEXT NOT NULL DEFAULT 'group',
-        group_type  TEXT NOT NULL DEFAULT 'public',
-        created_by  TEXT NOT NULL,
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        name         TEXT NOT NULL,
+        description  TEXT NOT NULL DEFAULT '',
+        icon         TEXT NOT NULL DEFAULT 'group',
+        group_type   TEXT NOT NULL DEFAULT 'public',
+        created_by   TEXT NOT NULL,
         member_count INTEGER NOT NULL DEFAULT 1,
-        created_at  INTEGER NOT NULL
+        created_at   INTEGER NOT NULL
     );
     CREATE TABLE IF NOT EXISTS group_members (
         group_id    INTEGER NOT NULL,
@@ -94,20 +122,33 @@ def init_db():
         FOREIGN KEY (user_key) REFERENCES users(user_key)
     );
     CREATE TABLE IF NOT EXISTS referrals (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        inviter_key TEXT NOT NULL,
-        invited_key TEXT NOT NULL,
-        rewarded    INTEGER NOT NULL DEFAULT 0,
-        created_at  INTEGER NOT NULL,
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        inviter_key  TEXT NOT NULL,
+        invited_key  TEXT NOT NULL,
+        rewarded     INTEGER NOT NULL DEFAULT 0,
+        created_at   INTEGER NOT NULL,
         FOREIGN KEY (inviter_key) REFERENCES users(user_key)
     );
+    CREATE TABLE IF NOT EXISTS cubes (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        x           INTEGER NOT NULL,
+        y           INTEGER NOT NULL,
+        z           INTEGER NOT NULL DEFAULT 0,
+        owner_key   TEXT,
+        cube_type   TEXT NOT NULL DEFAULT 'public',
+        name        TEXT NOT NULL DEFAULT '',
+        color       TEXT NOT NULL DEFAULT '#6C63FF',
+        price       INTEGER NOT NULL DEFAULT 0,
+        created_at  INTEGER NOT NULL,
+        UNIQUE(x, y, z),
+        FOREIGN KEY (owner_key) REFERENCES users(user_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_cubes_owner ON cubes(owner_key);
     """)
     conn.commit()
-
     count = conn.execute("SELECT COUNT(*) FROM posts").fetchone()[0]
     if count == 0:
         _seed_demo_data(conn)
-
     conn.close()
     print(f"DB ready: {DB_PATH}")
 
@@ -126,7 +167,10 @@ def _seed_demo_data(conn):
             "INSERT OR IGNORE INTO users (user_key, tier, balance, created_at) VALUES (?,?,?,?)",
             (key, tier, bal, now - 86400 * 7)
         )
-
+        conn.execute(
+            "INSERT OR IGNORE INTO wallets (user_key, linked_at) VALUES (?,?)",
+            (key, 0)
+        )
     demo_posts = [
         ("7A2F-CUBE-DEMO-0001", "7A2F-CUBE", "Crypto market is waking up. BTC broke 85k. Get ready for volatility.", "text", 42, 18, 0, 0, 7, 0),
         ("NN90-CUBE-DEMO-0002", "NN90-CUBE", "Ran a neural network on local hardware. GPT-4 level without the cloud is real.", "text", 91, 34, 22, 0, 0, 0),
@@ -141,7 +185,6 @@ def _seed_demo_data(conn):
                VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (key, author, text, ptype, fire, rocket, like, heart, eyes, thinking, now - 3600 * (i + 1))
         )
-
     demo_signals = [
         ("7A2F-CUBE-DEMO-0001", "7A2F-CUBE", "BTC/USDT", "long",  "84200", "87000", "82000", 156, 89),
         ("A1PH-CUBE-DEMO-0005", "A1PH-CUBE", "ETH/USDT", "long",  "3180",  "3450",  "3050",  89,  44),
@@ -155,6 +198,5 @@ def _seed_demo_data(conn):
                VALUES (?,?,?,?,?,?,?,?,?,?)""",
             (key, author, pair, direction, entry, tp, sl, rocket, fire, now - 1800 * (i + 1))
         )
-
     conn.commit()
     print("Demo data seeded")
