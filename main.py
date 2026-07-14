@@ -216,6 +216,22 @@ async def cube_balance(user=Depends(get_current_user)):
     return {"balance": db.get_cube_balance(user["id"]), "key_type": user["key_type"]}
 
 
+
+ADMIN_SECRET = os.getenv("ADMIN_SECRET", "")
+
+@app.post("/admin/upgrade")
+async def admin_upgrade(request: Request):
+    secret = request.headers.get("X-Admin-Secret", "")
+    if not ADMIN_SECRET or secret != ADMIN_SECRET:
+        raise HTTPException(403, "Forbidden")
+    body = await request.json()
+    user_id = body.get("user_id")
+    to_type = body.get("to_type", "premium")
+    if not user_id:
+        raise HTTPException(400, "user_id required")
+    db.upgrade_key(int(user_id), to_type, cube_spent=0.0)
+    return {"ok": True, "user_id": user_id, "key_type": to_type}
+
 @app.get("/stats")
 async def stats():
     return db.get_stats()
