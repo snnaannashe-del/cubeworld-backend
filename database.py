@@ -238,6 +238,11 @@ def create_cube(owner_id, name, description, icon, color, cube_type, life_hours)
         (owner_id,name,description,icon,color,cube_type,life_hours,str(life_hours)))
     cid = c.lastrowid; conn.commit(); conn.close(); return cid
 
+def deactivate_expired_cubes():
+    conn = get_db()
+    conn.execute("UPDATE cubes SET is_active=0 WHERE is_active=1 AND expires_at<=datetime('now')")
+    conn.commit(); conn.close()
+
 def list_cubes():
     conn = get_db()
     rows = conn.execute(
