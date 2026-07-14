@@ -1,11 +1,10 @@
-"""
-CubeWorld - SQLite database layer
-Auto-creates all tables on first run
-"""
+import sqlite3
+import hashlib
+import os
+from datetime import datetime
 
-import sqlite3, os, time
+DB_PATH = os.getenv("DB_PATH", "cubeworld.db")
 
-DB_PATH = os.environ.get("DB_PATH", "cubeworld.db")
 
 def get_db():
     conn = sqlite3.connect(DB_PATH)
@@ -14,189 +13,213 @@ def get_db():
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
+
 def init_db():
     conn = get_db()
-    conn.executescript("""
-    CREATE TABLE IF NOT EXISTS users (
-        user_key     TEXT PRIMARY KEY,
-        tier         TEXT NOT NULL DEFAULT 'free',
-        balance      INTEGER NOT NULL DEFAULT 250,
-        xp           INTEGER NOT NULL DEFAULT 0,
-        streak       INTEGER NOT NULL DEFAULT 0,
-        last_checkin TEXT DEFAULT '',
-        created_at   INTEGER NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS wallets (
-        user_key       TEXT PRIMARY KEY,
-        eth_address    TEXT UNIQUE,
-        hd_address     TEXT,
-        cube_balance   TEXT DEFAULT '0',
-        synced_at      INTEGER DEFAULT 0,
-        linked_at      INTEGER DEFAULT 0,
-        FOREIGN KEY (user_key) REFERENCES users(user_key)
-    );
-    CREATE INDEX IF NOT EXISTS idx_wallets_eth ON wallets(eth_address);
-    CREATE TABLE IF NOT EXISTS posts (
-        id              INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_key        TEXT NOT NULL,
-        author          TEXT NOT NULL,
-        text            TEXT NOT NULL,
-        post_type       TEXT NOT NULL DEFAULT 'text',
-        react_fire      INTEGER NOT NULL DEFAULT 0,
-        react_rocket    INTEGER NOT NULL DEFAULT 0,
-        react_like      INTEGER NOT NULL DEFAULT 0,
-        react_heart     INTEGER NOT NULL DEFAULT 0,
-        react_eyes      INTEGER NOT NULL DEFAULT 0,
-        react_thinking  INTEGER NOT NULL DEFAULT 0,
-        created_at      INTEGER NOT NULL,
-        FOREIGN KEY (user_key) REFERENCES users(user_key)
-    );
-    CREATE INDEX IF NOT EXISTS idx_posts_created ON posts(created_at DESC);
-    CREATE TABLE IF NOT EXISTS messages (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        room        TEXT NOT NULL,
-        user_key    TEXT NOT NULL,
-        text        TEXT NOT NULL,
-        created_at  INTEGER NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_messages_room ON messages(room, created_at DESC);
-    CREATE TABLE IF NOT EXISTS wallet_txs (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_key    TEXT NOT NULL,
-        dir         TEXT NOT NULL,
-        amount      INTEGER NOT NULL,
-        desc        TEXT NOT NULL,
-        icon        TEXT NOT NULL DEFAULT 'coin',
-        created_at  INTEGER NOT NULL,
-        FOREIGN KEY (user_key) REFERENCES users(user_key)
-    );
-    CREATE INDEX IF NOT EXISTS idx_txs_user ON wallet_txs(user_key, created_at DESC);
-    CREATE TABLE IF NOT EXISTS blockchain_txs (
-        id           INTEGER PRIMARY KEY AUTOINCREMENT,
-        tx_hash      TEXT UNIQUE,
-        user_key     TEXT NOT NULL,
-        eth_address  TEXT NOT NULL,
-        tx_type      TEXT NOT NULL,
-        amount_wei   TEXT NOT NULL,
-        amount_cube  REAL NOT NULL,
-        reason       TEXT NOT NULL DEFAULT '',
-        status       TEXT NOT NULL DEFAULT 'pending',
-        block_number INTEGER DEFAULT 0,
-        gas_used     INTEGER DEFAULT 0,
-        created_at   INTEGER NOT NULL,
-        confirmed_at INTEGER DEFAULT 0,
-        FOREIGN KEY (user_key) REFERENCES users(user_key)
-    );
-    CREATE INDEX IF NOT EXISTS idx_btxs_user ON blockchain_txs(user_key, created_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_btxs_hash ON blockchain_txs(tx_hash);
-    CREATE TABLE IF NOT EXISTS signals (
-        id            INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_key      TEXT NOT NULL,
-        author        TEXT NOT NULL,
-        pair          TEXT NOT NULL,
-        direction     TEXT NOT NULL,
-        entry         TEXT NOT NULL,
-        tp            TEXT NOT NULL,
-        sl            TEXT NOT NULL,
-        react_rocket  INTEGER NOT NULL DEFAULT 0,
-        react_fire    INTEGER NOT NULL DEFAULT 0,
-        created_at    INTEGER NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_signals_created ON signals(created_at DESC);
-    CREATE TABLE IF NOT EXISTS groups (
-        id           INTEGER PRIMARY KEY AUTOINCREMENT,
-        name         TEXT NOT NULL,
-        description  TEXT NOT NULL DEFAULT '',
-        icon         TEXT NOT NULL DEFAULT 'group',
-        group_type   TEXT NOT NULL DEFAULT 'public',
-        created_by   TEXT NOT NULL,
-        member_count INTEGER NOT NULL DEFAULT 1,
-        created_at   INTEGER NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS group_members (
-        group_id    INTEGER NOT NULL,
-        user_key    TEXT NOT NULL,
-        joined_at   INTEGER NOT NULL,
-        PRIMARY KEY (group_id, user_key),
-        FOREIGN KEY (group_id) REFERENCES groups(id),
-        FOREIGN KEY (user_key) REFERENCES users(user_key)
-    );
-    CREATE TABLE IF NOT EXISTS referrals (
-        id           INTEGER PRIMARY KEY AUTOINCREMENT,
-        inviter_key  TEXT NOT NULL,
-        invited_key  TEXT NOT NULL,
-        rewarded     INTEGER NOT NULL DEFAULT 0,
-        created_at   INTEGER NOT NULL,
-        FOREIGN KEY (inviter_key) REFERENCES users(user_key)
-    );
-    CREATE TABLE IF NOT EXISTS cubes (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        x           INTEGER NOT NULL,
-        y           INTEGER NOT NULL,
-        z           INTEGER NOT NULL DEFAULT 0,
-        owner_key   TEXT,
-        cube_type   TEXT NOT NULL DEFAULT 'public',
-        name        TEXT NOT NULL DEFAULT '',
-        color       TEXT NOT NULL DEFAULT '#6C63FF',
-        price       INTEGER NOT NULL DEFAULT 0,
-        created_at  INTEGER NOT NULL,
-        UNIQUE(x, y, z),
-        FOREIGN KEY (owner_key) REFERENCES users(user_key)
-    );
-    CREATE INDEX IF NOT EXISTS idx_cubes_owner ON cubes(owner_key);
+    c = conn.cursor()
+
+    # Users — identified solely by their CUBE key (no email/phone)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            key_hash      TEXT    NOT NULL UNIQUE,
+            key_prefix    TEXT    NOT NULL,
+            key_type      TEXT    NOT NULL DEFAULT 'free',
+            display_name  TEXT,
+            avatar_url    TEXT,
+            cube_balance  REAL    NOT NULL DEFAULT 0.0,
+            created_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+            last_seen     TEXT    NOT NULL DEFAULT (datetime('now')),
+            is_active     INTEGER NOT NULL DEFAULT 1
+        )
     """)
+
+    # Sessions / refresh tokens
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS sessions (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            token_hash    TEXT    NOT NULL UNIQUE,
+            created_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+            expires_at    TEXT    NOT NULL,
+            last_used     TEXT    NOT NULL DEFAULT (datetime('now')),
+            user_agent    TEXT,
+            ip_hash       TEXT
+        )
+    """)
+
+    # CUBE token transactions
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS cube_transactions (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            amount        REAL    NOT NULL,
+            tx_type       TEXT    NOT NULL,
+            description   TEXT,
+            tx_hash       TEXT,
+            created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+
+    # Linked wallets
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS wallets (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            address       TEXT    NOT NULL UNIQUE,
+            chain_id      INTEGER NOT NULL DEFAULT 137,
+            linked_at     TEXT    NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+
+    # Key upgrade history
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS key_upgrades (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            from_type     TEXT    NOT NULL,
+            to_type       TEXT    NOT NULL,
+            cube_spent    REAL    NOT NULL DEFAULT 0.0,
+            tx_hash       TEXT,
+            upgraded_at   TEXT    NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+
     conn.commit()
-    count = conn.execute("SELECT COUNT(*) FROM posts").fetchone()[0]
-    if count == 0:
-        _seed_demo_data(conn)
     conn.close()
-    print(f"DB ready: {DB_PATH}")
 
 
-def _seed_demo_data(conn):
-    now = int(time.time())
-    demo_users = [
-        ("7A2F-CUBE-DEMO-0001", "premium", 1250),
-        ("NN90-CUBE-DEMO-0002", "free",    420),
-        ("ANON-CUBE-DEMO-0003", "free",    88),
-        ("G057-CUBE-DEMO-0004", "premium", 3400),
-        ("A1PH-CUBE-DEMO-0005", "free",    210),
-    ]
-    for key, tier, bal in demo_users:
-        conn.execute(
-            "INSERT OR IGNORE INTO users (user_key, tier, balance, created_at) VALUES (?,?,?,?)",
-            (key, tier, bal, now - 86400 * 7)
-        )
-        conn.execute(
-            "INSERT OR IGNORE INTO wallets (user_key, linked_at) VALUES (?,?)",
-            (key, 0)
-        )
-    demo_posts = [
-        ("7A2F-CUBE-DEMO-0001", "7A2F-CUBE", "Crypto market is waking up. BTC broke 85k. Get ready for volatility.", "text", 42, 18, 0, 0, 7, 0),
-        ("NN90-CUBE-DEMO-0002", "NN90-CUBE", "Ran a neural network on local hardware. GPT-4 level without the cloud is real.", "text", 91, 34, 22, 0, 0, 0),
-        ("ANON-CUBE-DEMO-0003", "ANON-????", "BTC/USDT Long @ 84,200 | TP: 87,000 | SL: 82,000", "signal", 89, 156, 0, 0, 0, 0),
-        ("G057-CUBE-DEMO-0004", "G057-CUBE", "New exclusive NFT drop. 48 hours only. After - deleted.", "media", 67, 0, 0, 203, 0, 0),
-        ("A1PH-CUBE-DEMO-0005", "A1PH-CUBE", "ETH being accumulated by large wallets. Whale Alert: +12,400 ETH in 6 hours", "text", 144, 312, 0, 0, 56, 0),
-    ]
-    for i, (key, author, text, ptype, fire, rocket, like, heart, eyes, thinking) in enumerate(demo_posts):
-        conn.execute(
-            """INSERT INTO posts
-               (user_key,author,text,post_type,react_fire,react_rocket,react_like,react_heart,react_eyes,react_thinking,created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-            (key, author, text, ptype, fire, rocket, like, heart, eyes, thinking, now - 3600 * (i + 1))
-        )
-    demo_signals = [
-        ("7A2F-CUBE-DEMO-0001", "7A2F-CUBE", "BTC/USDT", "long",  "84200", "87000", "82000", 156, 89),
-        ("A1PH-CUBE-DEMO-0005", "A1PH-CUBE", "ETH/USDT", "long",  "3180",  "3450",  "3050",  89,  44),
-        ("NN90-CUBE-DEMO-0002", "NN90-CUBE", "SOL/USDT", "short", "142.5", "128.0", "150.0", 34,  18),
-        ("G057-CUBE-DEMO-0004", "G057-CUBE", "XRP/USDT", "long",  "0.892", "0.980", "0.840", 45,  22),
-    ]
-    for i, (key, author, pair, direction, entry, tp, sl, rocket, fire) in enumerate(demo_signals):
-        conn.execute(
-            """INSERT INTO signals
-               (user_key,author,pair,direction,entry,tp,sl,react_rocket,react_fire,created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
-            (key, author, pair, direction, entry, tp, sl, rocket, fire, now - 1800 * (i + 1))
-        )
+def hash_key(raw_key: str) -> str:
+    return hashlib.sha256(raw_key.encode()).hexdigest()
+
+
+def hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def get_user_by_key_hash(key_hash: str):
+    conn = get_db()
+    user = conn.execute(
+        "SELECT * FROM users WHERE key_hash = ? AND is_active = 1", (key_hash,)
+    ).fetchone()
+    conn.close()
+    return user
+
+
+def get_user_by_id(user_id: int):
+    conn = get_db()
+    user = conn.execute(
+        "SELECT * FROM users WHERE id = ? AND is_active = 1", (user_id,)
+    ).fetchone()
+    conn.close()
+    return user
+
+
+def create_user(key_hash: str, key_prefix: str, key_type: str = "free"):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO users (key_hash, key_prefix, key_type) VALUES (?, ?, ?)",
+        (key_hash, key_prefix, key_type),
+    )
+    user_id = c.lastrowid
     conn.commit()
-    print("Demo data seeded")
+    conn.close()
+    return user_id
+
+
+def update_last_seen(user_id: int):
+    conn = get_db()
+    conn.execute("UPDATE users SET last_seen = datetime('now') WHERE id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+
+def create_session(user_id: int, token_hash: str, expires_at: str,
+                   user_agent: str = None, ip_hash: str = None):
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO sessions (user_id, token_hash, expires_at, user_agent, ip_hash) VALUES (?, ?, ?, ?, ?)",
+        (user_id, token_hash, expires_at, user_agent, ip_hash),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_session_by_token_hash(token_hash: str):
+    conn = get_db()
+    session = conn.execute(
+        """SELECT s.*, u.key_type, u.key_prefix, u.cube_balance, u.display_name, u.id as user_id
+           FROM sessions s
+           JOIN users u ON u.id = s.user_id
+           WHERE s.token_hash = ? AND s.expires_at > datetime('now')""",
+        (token_hash,),
+    ).fetchone()
+    conn.close()
+    return session
+
+
+def delete_session(token_hash: str):
+    conn = get_db()
+    conn.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+    conn.commit()
+    conn.close()
+
+
+def add_cube_balance(user_id: int, amount: float, tx_type: str,
+                     description: str = None, tx_hash: str = None):
+    conn = get_db()
+    conn.execute(
+        "UPDATE users SET cube_balance = cube_balance + ? WHERE id = ?",
+        (amount, user_id),
+    )
+    conn.execute(
+        "INSERT INTO cube_transactions (user_id, amount, tx_type, description, tx_hash) VALUES (?, ?, ?, ?, ?)",
+        (user_id, amount, tx_type, description, tx_hash),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_cube_balance(user_id: int) -> float:
+    conn = get_db()
+    row = conn.execute("SELECT cube_balance FROM users WHERE id = ?", (user_id,)).fetchone()
+    conn.close()
+    return row["cube_balance"] if row else 0.0
+
+
+def upgrade_key(user_id: int, to_type: str, cube_spent: float = 0.0, tx_hash: str = None):
+    conn = get_db()
+    current = conn.execute("SELECT key_type FROM users WHERE id = ?", (user_id,)).fetchone()
+    from_type = current["key_type"] if current else "free"
+    conn.execute(
+        "UPDATE users SET key_type = ?, cube_balance = cube_balance - ? WHERE id = ?",
+        (to_type, cube_spent, user_id),
+    )
+    conn.execute(
+        "INSERT INTO key_upgrades (user_id, from_type, to_type, cube_spent, tx_hash) VALUES (?, ?, ?, ?, ?)",
+        (user_id, from_type, to_type, cube_spent, tx_hash),
+    )
+    conn.commit()
+    conn.close()
+
+
+def link_wallet(user_id: int, address: str, chain_id: int = 137):
+    conn = get_db()
+    conn.execute(
+        "INSERT OR REPLACE INTO wallets (user_id, address, chain_id) VALUES (?, ?, ?)",
+        (user_id, address.lower(), chain_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_stats() -> dict:
+    conn = get_db()
+    total_users  = conn.execute("SELECT COUNT(*) FROM users WHERE is_active=1").fetchone()[0]
+    premium_users = conn.execute("SELECT COUNT(*) FROM users WHERE key_type='premium' AND is_active=1").fetchone()[0]
+    online_users = conn.execute(
+        "SELECT COUNT(*) FROM users WHERE last_seen > datetime('now', '-5 minutes')"
+    ).fetchone()[0]
+    conn.close()
+    return {"total_users": total_users, "premium_users": premium_users, "online_users": online_users}
