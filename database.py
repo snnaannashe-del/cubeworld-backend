@@ -146,12 +146,12 @@ def init_db():
             is_active INTEGER NOT NULL DEFAULT 1,
             cube_key TEXT UNIQUE
         )""")
-        # Migration: add cube_key column if missing
-        try:
+        # Migration: add cube_key column if missing (PG-safe: check before ALTER)
+        c.execute("""SELECT column_name FROM information_schema.columns
+                     WHERE table_name='cubes' AND column_name='cube_key'""")
+        if not c.fetchone():
             c.execute("ALTER TABLE cubes ADD COLUMN cube_key TEXT")
-            conn.commit()
-        except Exception:
-            pass
+        conn.commit()
         c.execute("""CREATE TABLE IF NOT EXISTS messages (
             id SERIAL PRIMARY KEY,
             cube_id INTEGER NOT NULL,
@@ -327,12 +327,11 @@ def init_db():
             is_active INTEGER NOT NULL DEFAULT 1,
             cube_key TEXT UNIQUE
         )""")
-        # Migration: add cube_key column if missing
-        try:
+        # Migration: add cube_key column if missing (SQLite)
+        existing_cols = [row[1] for row in c.execute("PRAGMA table_info(cubes)").fetchall()]
+        if 'cube_key' not in existing_cols:
             c.execute("ALTER TABLE cubes ADD COLUMN cube_key TEXT")
             conn.commit()
-        except Exception:
-            pass
         c.execute("""CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             cube_id INTEGER NOT NULL,
