@@ -157,6 +157,24 @@ def init_db():
             if not c.fetchone():
                 c.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {defn}")
         conn.commit()
+        c.execute("""CREATE TABLE IF NOT EXISTS groups (
+            id SERIAL PRIMARY KEY,
+            owner_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            name TEXT NOT NULL,
+            description TEXT DEFAULT '',
+            icon TEXT DEFAULT '👥',
+            type TEXT NOT NULL DEFAULT 'public',
+            handle TEXT UNIQUE,
+            member_count INTEGER NOT NULL DEFAULT 1,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS group_members (
+            group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            joined_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (group_id, user_id)
+        )""")
+        conn.commit()
         c.execute("""CREATE TABLE IF NOT EXISTS messages (
             id SERIAL PRIMARY KEY,
             cube_id INTEGER NOT NULL,
@@ -340,6 +358,24 @@ def init_db():
         _sqlite_add_col('cubes', 'cube_key', 'TEXT UNIQUE')
         _sqlite_add_col('users', 'username', 'TEXT UNIQUE')
         _sqlite_add_col('cubes', 'handle', 'TEXT UNIQUE')
+        conn.commit()
+        c.execute("""CREATE TABLE IF NOT EXISTS groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            name TEXT NOT NULL,
+            description TEXT DEFAULT '',
+            icon TEXT DEFAULT '👥',
+            type TEXT NOT NULL DEFAULT 'public',
+            handle TEXT UNIQUE,
+            member_count INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS group_members (
+            group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            joined_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (group_id, user_id)
+        )""")
         conn.commit()
         c.execute("""CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -610,6 +646,161 @@ def search_cubes(query: str, limit: int = 20):
     rows = c.fetchall()
     conn.close()
     return _fetchall(rows)
+
+# ── Groups ───────────────────────────────────────────────────────────────────
+
+def create_group(owner_id: int, name: str, description: str, icon: str, gtype: str):
+    """Create a group and auto-add owner as member. Returns group_id."""
+    conn = get_db(); c = conn.cursor()
+    try:
+        gid = _execute_returning(
+            conn,
+            _q("INSERT INTO groups (owner_id,name,description,icon,type) VALUES (?,?,?,?,?)"),
+            (owner_id, name, description, icon, gtype)
+        )
+        c.execute(_q("INSERT INTO group_members (group_id,user_id) VALUES (?,?)"), (gid, owner_id))
+        conn.commit(); conn.close()
+        return gid
+    except Exception:
+        if _PG: conn.rollback()
+        conn.close(); return None
+
+def get_groups(limit: int = 50, user_id: int = None):
+    """List public groups, with is_member flag if user_id given."""
+    conn = get_db(); c = conn.cursor()
+    if _PG:
+        if user_id:
+            c.execute("""SELECT g.id,g.owner_id,g.name,g.description,g.icon,g.type,g.handle,g.member_count,g.created_at,
+                                EXISTS(SELECT 1 FROM group_members gm WHERE gm.group_id=g.id AND gm.user_id=%s) as is_member
+                         FROM groups g WHERE g.type='public' ORDER BY g.member_count DESC LIMIT %s""", (user_id, limit))
+        else:
+            c.execute("""SELECT id,owner_id,name,description,icon,type,handle,member_count,created_at,false as is_member
+                         FROM groups WHERE type='public' ORDER BY member_count DESC LIMIT %s""", (limit,))
+    else:
+        if user_id:
+            c.execute("""SELECT g.id,g.owner_id,g.name,g.description,g.icon,g.type,g.handle,g.member_count,g.created_at,
+                                CASE WHEN gm.user_id IS NOT NULL THEN 1 ELSE 0 END as is_member
+                         FROM groups g LEFT JOIN group_members gm ON gm.group_id=g.id AND gm.user_id=?
+                         WHERE g.type='public' ORDER BY g.member_count DESC LIMIT ?""", (user_id, limit))
+        else:
+            c.execute("""SELECT id,owner_id,name,description,icon,type,handle,member_count,created_at,0 as is_member
+                         FROM groups WHERE type='public' ORDER BY member_count DESC LIMIT ?""", (limit,))
+    rows = _fetchall(c.fetchall()); conn.close()
+    return rows
+
+def get_my_groups(user_id: int):
+    """Groups where user is a member (including private ones)."""
+    conn = get_db(); c = conn.cursor()
+    if _PG:
+        c.execute("""SELECT g.id,g.owner_id,g.name,g.description,g.icon,g.type,g.handle,g.member_count,g.created_at,
+                            true as is_member
+                     FROM groups g JOIN group_members gm ON gm.group_id=g.id
+                     WHERE gm.user_id=%s ORDER BY gm.joined_at DESC""", (user_id,))
+    else:
+        c.execute("""SELECT g.id,g.owner_id,g.name,g.description,g.icon,g.type,g.handle,g.member_count,g.created_at,
+                            1 as is_member
+                     FROM groups g JOIN group_members gm ON gm.group_id=g.id
+                     WHERE gm.user_id=? ORDER BY gm.joined_at DESC""", (user_id,))
+    rows = _fetchall(c.fetchall()); conn.close()
+    return rows
+
+def join_group(group_id: int, user_id: int):
+    """Join a public group. Returns True/False."""
+    conn = get_db(); c = conn.cursor()
+    try:
+        c.execute(_q("SELECT id,type FROM groups WHERE id=?"), (group_id,))
+        g = c.fetchone()
+        if not g: conn.close(); return False
+        if _PG:
+            c.execute("INSERT INTO group_members (group_id,user_id) VALUES (%s,%s) ON CONFLICT DO NOTHING",
+                      (group_id, user_id))
+            c.execute("UPDATE groups SET member_count = (SELECT COUNT(*) FROM group_members WHERE group_id=%s) WHERE id=%s",
+                      (group_id, group_id))
+        else:
+            c.execute("INSERT OR IGNORE INTO group_members (group_id,user_id) VALUES (?,?)", (group_id, user_id))
+            c.execute("UPDATE groups SET member_count = (SELECT COUNT(*) FROM group_members WHERE group_id=?) WHERE id=?",
+                      (group_id, group_id))
+        conn.commit(); conn.close(); return True
+    except Exception:
+        if _PG: conn.rollback()
+        conn.close(); return False
+
+def leave_group(group_id: int, user_id: int):
+    """Leave a group (owner cannot leave)."""
+    conn = get_db(); c = conn.cursor()
+    try:
+        c.execute(_q("SELECT owner_id FROM groups WHERE id=?"), (group_id,))
+        g = c.fetchone()
+        if not g: conn.close(); return False
+        if dict(g).get('owner_id') == user_id: conn.close(); return False  # owner can't leave
+        c.execute(_q("DELETE FROM group_members WHERE group_id=? AND user_id=?"), (group_id, user_id))
+        if _PG:
+            c.execute("UPDATE groups SET member_count = (SELECT COUNT(*) FROM group_members WHERE group_id=%s) WHERE id=%s",
+                      (group_id, group_id))
+        else:
+            c.execute("UPDATE groups SET member_count = (SELECT COUNT(*) FROM group_members WHERE group_id=?) WHERE id=?",
+                      (group_id, group_id))
+        conn.commit(); conn.close(); return True
+    except Exception:
+        if _PG: conn.rollback()
+        conn.close(); return False
+
+def search_groups(query: str, limit: int = 20, user_id: int = None):
+    """Search groups by name, description, or #G42 / @handle."""
+    conn = get_db(); c = conn.cursor()
+    q = query.strip()
+    uid_col = "EXISTS(SELECT 1 FROM group_members gm WHERE gm.group_id=g.id AND gm.user_id=%s) as is_member" if _PG else \
+              "CASE WHEN gm2.user_id IS NOT NULL THEN 1 ELSE 0 END as is_member"
+
+    if q.startswith('#'):
+        raw = q.lstrip('#Gg')
+        if raw.isdigit():
+            gid = int(raw)
+            if _PG:
+                c.execute(f"""SELECT g.id,g.owner_id,g.name,g.description,g.icon,g.type,g.handle,g.member_count,g.created_at,
+                                     {uid_col}
+                              FROM groups g WHERE g.id=%s""",
+                           (user_id, gid) if user_id else (gid,))
+            else:
+                c.execute("""SELECT g.id,g.owner_id,g.name,g.description,g.icon,g.type,g.handle,g.member_count,g.created_at,
+                                    CASE WHEN gm2.user_id IS NOT NULL THEN 1 ELSE 0 END as is_member
+                             FROM groups g LEFT JOIN group_members gm2 ON gm2.group_id=g.id AND gm2.user_id=?
+                             WHERE g.id=?""", (user_id or 0, gid))
+            row = c.fetchone(); conn.close()
+            return [dict(row)] if row else []
+
+    if q.startswith('@'):
+        q = q[1:]
+    if not q:
+        conn.close(); return []
+
+    pattern = f"%{q}%"
+    if _PG:
+        c.execute(f"""SELECT g.id,g.owner_id,g.name,g.description,g.icon,g.type,g.handle,g.member_count,g.created_at,
+                             {uid_col}
+                      FROM groups g WHERE g.name ILIKE %s OR g.description ILIKE %s OR g.handle ILIKE %s
+                      ORDER BY g.member_count DESC LIMIT %s""",
+                  (user_id, pattern, pattern, pattern, limit) if user_id else (pattern, pattern, pattern, limit))
+    else:
+        c.execute("""SELECT g.id,g.owner_id,g.name,g.description,g.icon,g.type,g.handle,g.member_count,g.created_at,
+                            CASE WHEN gm2.user_id IS NOT NULL THEN 1 ELSE 0 END as is_member
+                     FROM groups g LEFT JOIN group_members gm2 ON gm2.group_id=g.id AND gm2.user_id=?
+                     WHERE g.name LIKE ? OR g.description LIKE ? OR g.handle LIKE ?
+                     ORDER BY g.member_count DESC LIMIT ?""",
+                  (user_id or 0, pattern, pattern, pattern, limit))
+    rows = _fetchall(c.fetchall()); conn.close()
+    return rows
+
+def set_group_handle(group_id: int, owner_id: int, handle: str):
+    """Set @handle for a group. Only owner."""
+    conn = get_db(); c = conn.cursor()
+    try:
+        c.execute(_q("UPDATE groups SET handle=? WHERE id=? AND owner_id=?"),
+                  (handle.lower(), group_id, owner_id))
+        conn.commit(); conn.close(); return True
+    except Exception:
+        if _PG: conn.rollback()
+        conn.close(); return False
 
 def set_username(user_id: int, username: str):
     """Set or update @username. Returns True on success, False if taken."""
