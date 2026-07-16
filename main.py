@@ -540,7 +540,9 @@ async def ws_cube(websocket: WebSocket, token: str, cube_id: str):
                     "expires_secs": expires_secs,
                     "created_at": datetime.utcnow().isoformat()
                 }
-                await _broadcast(cube_id, out)  # include sender
+                # Broadcast to others; send ack (with server ID) only to sender
+                await _broadcast(cube_id, out, exclude=user_id)
+                await _send_to_user(cube_id, user_id, {**out, "type": "message_ack"})
 
             elif msg_type == "react":
                 # {type:"react", msg_id:X, emoji:"👍"}
