@@ -138,13 +138,20 @@ def init_db():
             name TEXT NOT NULL,
             description TEXT DEFAULT '',
             icon TEXT DEFAULT '📦',
-            color TEXT DEFAULT '#7c6fcd',
+            color TEXT DEFAULT '#0095F6',
             type TEXT NOT NULL DEFAULT 'public',
             life_hours INTEGER NOT NULL DEFAULT 24,
             created_at TIMESTAMP NOT NULL DEFAULT NOW(),
             expires_at TIMESTAMP NOT NULL,
-            is_active INTEGER NOT NULL DEFAULT 1
+            is_active INTEGER NOT NULL DEFAULT 1,
+            cube_key TEXT UNIQUE
         )""")
+        # Migration: add cube_key column if missing
+        try:
+            c.execute("ALTER TABLE cubes ADD COLUMN cube_key TEXT")
+            conn.commit()
+        except Exception:
+            pass
         c.execute("""CREATE TABLE IF NOT EXISTS messages (
             id SERIAL PRIMARY KEY,
             cube_id INTEGER NOT NULL,
@@ -312,13 +319,20 @@ def init_db():
             name TEXT NOT NULL,
             description TEXT DEFAULT '',
             icon TEXT DEFAULT '📦',
-            color TEXT DEFAULT '#7c6fcd',
+            color TEXT DEFAULT '#0095F6',
             type TEXT NOT NULL DEFAULT 'public',
             life_hours INTEGER NOT NULL DEFAULT 24,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             expires_at TEXT NOT NULL,
-            is_active INTEGER NOT NULL DEFAULT 1
+            is_active INTEGER NOT NULL DEFAULT 1,
+            cube_key TEXT UNIQUE
         )""")
+        # Migration: add cube_key column if missing
+        try:
+            c.execute("ALTER TABLE cubes ADD COLUMN cube_key TEXT")
+            conn.commit()
+        except Exception:
+            pass
         c.execute("""CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             cube_id INTEGER NOT NULL,
@@ -574,17 +588,50 @@ def get_stats():
 
 # ── Cubes ─────────────────────────────────────────────────────────────────────
 
+def _gen_cube_key():
+    """Generate a unique cube invite key: CK-XXXX-XXXX-XXXX"""
+    import secrets, string
+    chars = string.ascii_uppercase + string.digits
+    seg = lambda: ''.join(secrets.choice(chars) for _ in range(4))
+    return f"CK-{seg()}-{seg()}-{seg()}"
+
 def create_cube(owner_id, name, description, icon, color, cube_type, life_hours):
     conn = get_db()
+    # Generate unique cube key
+    cube_key = _gen_cube_key()
     if _PG:
-        sql = """INSERT INTO cubes (owner_id,name,description,icon,color,type,life_hours,expires_at)
-                 VALUES (%s,%s,%s,%s,%s,%s,%s, NOW() + (%s || ' hours')::INTERVAL)"""
+        sql = """INSERT INTO cubes (owner_id,name,description,icon,color,type,life_hours,expires_at,cube_key)
+                 VALUES (%s,%s,%s,%s,%s,%s,%s, NOW() + (%s || ' hours')::INTERVAL, %s)"""
     else:
-        sql = """INSERT INTO cubes (owner_id,name,description,icon,color,type,life_hours,expires_at)
-                 VALUES (?,?,?,?,?,?,?,datetime('now','+'||?||' hours'))"""
+        sql = """INSERT INTO cubes (owner_id,name,description,icon,color,type,life_hours,expires_at,cube_key)
+                 VALUES (?,?,?,?,?,?,?,datetime('now','+'||?||' hours'),?)"""
     cid = _execute_returning(conn, sql,
-          (owner_id, name, description, icon, color, cube_type, life_hours, str(life_hours)))
-    conn.commit(); conn.close(); return cid
+          (owner_id, name, description, icon, color, cube_type, life_hours, str(life_hours), cube_key))
+    conn.commit(); conn.close()
+    return cid, cube_key
+
+def get_cube_by_key(cube_key: str):
+    """Resolve a cube invite key → cube info (if still active/not expired)."""
+    conn = get_db(); c = conn.cursor()
+    if _PG:
+        c.execute("""SELECT id,owner_id,name,description,icon,color,type,life_hours,expires_at,cube_key,
+                            CAST(EXTRACT(EPOCH FROM (expires_at - NOW())) AS INTEGER) as life_left_seconds
+                     FROM cubes WHERE cube_key=%s AND is_active=1 AND expires_at>NOW()""", (cube_key,))
+    else:
+        c.execute("""SELECT id,owner_id,name,description,icon,color,type,life_hours,expires_at,cube_key,
+                            CAST((julianday(expires_at)-julianday('now'))*86400 AS INTEGER) as life_left_seconds
+                     FROM cubes WHERE cube_key=? AND is_active=1 AND expires_at>datetime('now')""", (cube_key,))
+    row = c.fetchone(); conn.close()
+    return _fetchone(row) if row else None
+
+def get_cube_key(cube_id: int, owner_id: int):
+    """Return cube_key only to the cube owner."""
+    conn = get_db(); c = conn.cursor()
+    ph = '%s' if _PG else '?'
+    c.execute(f"SELECT cube_key FROM cubes WHERE id={ph} AND owner_id={ph}", (cube_id, owner_id))
+    row = c.fetchone(); conn.close()
+    if not row: return None
+    return row[0] if not _PG else row['cube_key']
 
 def deactivate_expired_cubes():
     conn = get_db(); c = conn.cursor()
