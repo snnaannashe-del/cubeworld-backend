@@ -192,12 +192,7 @@ async def get_me(user=Depends(get_current_user)):
 
 @app.patch("/me")
 async def update_me(body: UpdateProfileRequest, user=Depends(get_current_user)):
-    conn = db.get_db()
-    if body.display_name is not None:
-        conn.execute("UPDATE users SET display_name=? WHERE id=?", (body.display_name, user["id"]))
-    if body.avatar_url is not None:
-        conn.execute("UPDATE users SET avatar_url=? WHERE id=?", (body.avatar_url, user["id"]))
-    conn.commit(); conn.close()
+    db.update_profile(user["id"], body.display_name, body.avatar_url)
     return {"ok": True}
 
 @app.post("/wallet/link")
@@ -207,10 +202,10 @@ async def link_wallet(body: WalletLinkRequest, user=Depends(get_current_user)):
 
 @app.get("/wallet/my")
 async def my_wallets(user=Depends(get_current_user)):
-    conn = db.get_db()
-    rows = conn.execute(
-        "SELECT address,chain_id,linked_at FROM wallets WHERE user_id=? ORDER BY id DESC",
-        (user["id"],)).fetchall()
+    conn = db.get_db(); c = conn.cursor()
+    c.execute(db._q("SELECT address,chain_id,linked_at FROM wallets WHERE user_id=? ORDER BY id DESC"),
+              (user["id"],))
+    rows = c.fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
@@ -268,17 +263,18 @@ async def reward_claim(body: RewardClaimRequest, user=Depends(get_current_user))
 
 @app.get("/rewards/history")
 async def reward_history(user=Depends(get_current_user)):
-    conn = db.get_db()
-    rows = conn.execute(
-        "SELECT month,score,usd_amount,wallet_address,status,created_at FROM reward_claims WHERE user_id=? ORDER BY id DESC",
-        (user["id"],)).fetchall()
+    conn = db.get_db(); c = conn.cursor()
+    c.execute(db._q("SELECT month,score,usd_amount,wallet_address,status,created_at FROM reward_claims WHERE user_id=? ORDER BY id DESC"),
+              (user["id"],))
+    rows = c.fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
 @app.get("/rewards/pool")
 async def reward_pool_info():
-    conn = db.get_db()
-    row = conn.execute("SELECT * FROM reward_pool WHERE id=1").fetchone()
+    conn = db.get_db(); c = conn.cursor()
+    c.execute("SELECT * FROM reward_pool WHERE id=1")
+    row = c.fetchone()
     conn.close()
     if not row: return {"total_usd": 1000000, "used_usd": 0, "remaining_usd": 1000000}
     r = dict(row)
