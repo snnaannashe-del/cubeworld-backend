@@ -107,6 +107,15 @@ class SetUsernameRequest(BaseModel):
 class SetCubeHandleRequest(BaseModel):
     handle: str
 
+class CreateGroupRequest(BaseModel):
+    name: str
+    description: Optional[str] = ''
+    icon: Optional[str] = '👥'
+    type: Optional[str] = 'public'  # public | private
+
+class SetGroupHandleRequest(BaseModel):
+    handle: str
+
 class CreatePostRequest(BaseModel):
     content: str
 
@@ -379,6 +388,76 @@ async def reward_pool_info():
 @app.get("/cube/balance")
 async def cube_balance(user=Depends(get_current_user)):
     return {"balance": db.get_cube_balance(user["id"]), "key_type": user["key_type"]}
+
+# ── Groups ────────────────────────────────────────────────────────────────────
+
+import re as _re
+_HANDLE_RE = _re.compile(r'^[a-z0-9_]{3,24}$')
+
+@app.get("/groups")
+async def list_groups(creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme)):
+    """List public groups. Optional auth to get is_member flag."""
+    uid = None
+    if creds:
+        try:
+            payload = decode_access_token(creds.credentials)
+            user = db.get_user_by_id(int(payload["sub"]))
+            if user: uid = user["id"]
+        except Exception:
+            pass
+    return db.get_groups(limit=50, user_id=uid)
+
+@app.get("/groups/my")
+async def my_groups(user=Depends(get_current_user)):
+    return db.get_my_groups(user["id"])
+
+@app.get("/groups/search")
+async def search_groups(q: str = "", creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme)):
+    uid = None
+    if creds:
+        try:
+            payload = decode_access_token(creds.credentials)
+            u = db.get_user_by_id(int(payload["sub"]))
+            if u: uid = u["id"]
+        except Exception:
+            pass
+    return db.search_groups(q, limit=20, user_id=uid)
+
+@app.post("/groups")
+async def create_group(body: CreateGroupRequest, user=Depends(get_current_user)):
+    if not body.name.strip():
+        raise HTTPException(400, "Name required")
+    gtype = body.type if body.type in ('public', 'private') else 'public'
+    gid = db.create_group(user["id"], body.name.strip(), body.description or '', body.icon or '👥', gtype)
+    if not gid:
+        raise HTTPException(500, "Could not create group")
+    groups = db.get_my_groups(user["id"])
+    created = next((g for g in groups if g["id"] == gid), None)
+    return created or {"id": gid}
+
+@app.post("/groups/{group_id}/join")
+async def join_group(group_id: int, user=Depends(get_current_user)):
+    ok = db.join_group(group_id, user["id"])
+    if not ok:
+        raise HTTPException(404, "Group not found")
+    return {"joined": True, "group_id": group_id}
+
+@app.post("/groups/{group_id}/leave")
+async def leave_group(group_id: int, user=Depends(get_current_user)):
+    ok = db.leave_group(group_id, user["id"])
+    if not ok:
+        raise HTTPException(400, "Cannot leave (not a member or you are the owner)")
+    return {"left": True, "group_id": group_id}
+
+@app.post("/groups/{group_id}/handle")
+async def set_group_handle(group_id: int, body: SetGroupHandleRequest, user=Depends(get_current_user)):
+    handle = body.handle.lower().strip()
+    if not _HANDLE_RE.match(handle):
+        raise HTTPException(400, "Handle must be 3-24 chars: a-z 0-9 _")
+    ok = db.set_group_handle(group_id, user["id"], handle)
+    if not ok:
+        raise HTTPException(400, "Handle taken or not your group")
+    return {"handle": handle}
 
 # ── Cubes CRUD ────────────────────────────────────────────────────────────────
 
