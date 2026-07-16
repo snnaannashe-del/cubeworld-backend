@@ -146,11 +146,16 @@ def init_db():
             is_active INTEGER NOT NULL DEFAULT 1,
             cube_key TEXT UNIQUE
         )""")
-        # Migration: add cube_key column if missing (PG-safe: check before ALTER)
-        c.execute("""SELECT column_name FROM information_schema.columns
-                     WHERE table_name='cubes' AND column_name='cube_key'""")
-        if not c.fetchone():
-            c.execute("ALTER TABLE cubes ADD COLUMN cube_key TEXT")
+        # Migrations: add columns if missing (PG-safe)
+        for tbl, col, defn in [
+            ('cubes', 'cube_key', 'TEXT'),
+            ('users', 'username', 'TEXT UNIQUE'),
+            ('cubes', 'handle', 'TEXT UNIQUE'),
+        ]:
+            c.execute("""SELECT column_name FROM information_schema.columns
+                         WHERE table_name=%s AND column_name=%s""", (tbl, col))
+            if not c.fetchone():
+                c.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {defn}")
         conn.commit()
         c.execute("""CREATE TABLE IF NOT EXISTS messages (
             id SERIAL PRIMARY KEY,
@@ -327,11 +332,15 @@ def init_db():
             is_active INTEGER NOT NULL DEFAULT 1,
             cube_key TEXT UNIQUE
         )""")
-        # Migration: add cube_key column if missing (SQLite)
-        existing_cols = [row[1] for row in c.execute("PRAGMA table_info(cubes)").fetchall()]
-        if 'cube_key' not in existing_cols:
-            c.execute("ALTER TABLE cubes ADD COLUMN cube_key TEXT")
-            conn.commit()
+        # Migrations: add missing columns (SQLite)
+        def _sqlite_add_col(table, col, defn):
+            cols = [row[1] for row in c.execute(f"PRAGMA table_info({table})").fetchall()]
+            if col not in cols:
+                c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {defn}")
+        _sqlite_add_col('cubes', 'cube_key', 'TEXT UNIQUE')
+        _sqlite_add_col('users', 'username', 'TEXT UNIQUE')
+        _sqlite_add_col('cubes', 'handle', 'TEXT UNIQUE')
+        conn.commit()
         c.execute("""CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             cube_id INTEGER NOT NULL,
@@ -510,6 +519,121 @@ def get_display_name(user_id):
     if not row: return "Unknown"
     row = dict(row)
     return row["display_name"] or f"CUBE-{row['key_prefix']}"
+
+def search_users(query: str, limit: int = 20, exclude_id: int = None):
+    """
+    Search users by @username, display_name, key_prefix, or #ID.
+    #42  → direct numeric UID lookup
+    @ann → search username field
+    ann  → search display_name + key_prefix
+    """
+    conn = get_db(); c = conn.cursor()
+
+    excl = f"AND id != {int(exclude_id)}" if exclude_id else ""
+
+    # #42 — direct UID lookup
+    q = query.strip()
+    if q.startswith('#') and q[1:].isdigit():
+        uid = int(q[1:])
+        c.execute(_q(f"SELECT id,display_name,username,key_prefix,avatar_url,key_type,last_seen FROM users WHERE id=? AND is_active=1 {excl}"), (uid,))
+        row = c.fetchone()
+        conn.close()
+        return [dict(row)] if row else []
+
+    # Remove @ prefix for username search
+    if q.startswith('@'):
+        q = q[1:]
+
+    if not q:
+        conn.close()
+        return []
+
+    if _PG:
+        pattern = f"%{q}%"
+        c.execute(f"""SELECT id,display_name,username,key_prefix,avatar_url,key_type,last_seen
+                      FROM users
+                      WHERE is_active=1
+                        AND (username ILIKE %s OR display_name ILIKE %s OR key_prefix ILIKE %s)
+                        {excl}
+                      ORDER BY last_seen DESC LIMIT %s""",
+                  (pattern, pattern, pattern, limit))
+    else:
+        pattern = f"%{q}%"
+        c.execute(f"""SELECT id,display_name,username,key_prefix,avatar_url,key_type,last_seen
+                      FROM users
+                      WHERE is_active=1
+                        AND (username LIKE ? OR display_name LIKE ? OR key_prefix LIKE ?)
+                        {excl}
+                      ORDER BY last_seen DESC LIMIT ?""",
+                  (pattern, pattern, pattern, limit))
+
+    rows = c.fetchall()
+    conn.close()
+    return _fetchall(rows)
+
+def search_cubes(query: str, limit: int = 20):
+    """Search cubes by @handle, name. #G42 = cube id lookup."""
+    conn = get_db(); c = conn.cursor()
+    q = query.strip()
+
+    # #G42 or #42 — direct ID lookup
+    if q.startswith('#'):
+        uid_str = q.lstrip('#Gg')
+        if uid_str.isdigit():
+            c.execute(_q("""SELECT id,name,description,icon,color,type,handle,cube_key,
+                                   life_hours,expires_at FROM cubes WHERE id=? AND is_active=1"""), (int(uid_str),))
+            row = c.fetchone()
+            conn.close()
+            return [dict(row)] if row else []
+
+    if q.startswith('@'):
+        q = q[1:]
+    if not q:
+        conn.close()
+        return []
+
+    if _PG:
+        pattern = f"%{q}%"
+        c.execute("""SELECT id,name,description,icon,color,type,handle,cube_key,life_hours,
+                            CAST(EXTRACT(EPOCH FROM (expires_at - NOW())) AS INTEGER) as life_left_seconds
+                     FROM cubes WHERE is_active=1 AND expires_at>NOW()
+                       AND (handle ILIKE %s OR name ILIKE %s)
+                     ORDER BY created_at DESC LIMIT %s""", (pattern, pattern, limit))
+    else:
+        pattern = f"%{q}%"
+        c.execute("""SELECT id,name,description,icon,color,type,handle,cube_key,life_hours,
+                            CAST((julianday(expires_at)-julianday('now'))*86400 AS INTEGER) as life_left_seconds
+                     FROM cubes WHERE is_active=1 AND expires_at>datetime('now')
+                       AND (handle LIKE ? OR name LIKE ?)
+                     ORDER BY created_at DESC LIMIT ?""", (pattern, pattern, limit))
+
+    rows = c.fetchall()
+    conn.close()
+    return _fetchall(rows)
+
+def set_username(user_id: int, username: str):
+    """Set or update @username. Returns True on success, False if taken."""
+    conn = get_db(); c = conn.cursor()
+    try:
+        c.execute(_q("UPDATE users SET username=? WHERE id=?"), (username.lower(), user_id))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception:
+        conn.rollback(); conn.close()
+        return False
+
+def set_cube_handle(cube_id: int, owner_id: int, handle: str):
+    """Set @handle for a cube. Only owner can set it."""
+    conn = get_db(); c = conn.cursor()
+    try:
+        c.execute(_q("UPDATE cubes SET handle=? WHERE id=? AND owner_id=?"),
+                  (handle.lower(), cube_id, owner_id))
+        conn.commit(); conn.close()
+        return True
+    except Exception:
+        conn.rollback(); conn.close()
+        return False
 
 def create_session(user_id, token_hash, expires_at, user_agent=None, ip_hash=None):
     conn = get_db(); c = conn.cursor()
