@@ -94,9 +94,12 @@ class CreateCubeRequest(BaseModel):
     name: str
     description: str = ""
     icon: str = "📦"
-    color: str = "#7c6fcd"
+    color: str = "#0095F6"
     type: str = "public"
     life_hours: int = 24
+
+class JoinCubeRequest(BaseModel):
+    cube_key: str
 
 class CreatePostRequest(BaseModel):
     content: str
@@ -320,8 +323,35 @@ async def create_cube(body: CreateCubeRequest, user=Depends(get_current_user)):
     color     = body.color[:20]
     ctype     = "public" if body.type == "public" else "private"
     life_h    = max(1, min(body.life_hours, 720))
-    cube_id   = db.create_cube(user["id"], name, desc, icon, color, ctype, life_h)
-    return {"id": cube_id, "name": name, "type": ctype, "life_hours": life_h, "ok": True}
+    cube_id, cube_key = db.create_cube(user["id"], name, desc, icon, color, ctype, life_h)
+    return {"id": cube_id, "name": name, "type": ctype, "life_hours": life_h,
+            "cube_key": cube_key, "ok": True}
+
+@app.post("/cubes/join")
+async def join_cube_by_key(body: JoinCubeRequest):
+    """Resolve a cube invite key — returns cube info if valid."""
+    key = body.cube_key.strip().upper()
+    cube = db.get_cube_by_key(key)
+    if not cube:
+        raise HTTPException(status_code=404, detail="Ключ не найден или куб истёк")
+    return {
+        "id":         cube["id"],
+        "name":       cube["name"],
+        "icon":       cube["icon"],
+        "color":      cube["color"],
+        "type":       cube["type"],
+        "life_left":  cube["life_left_seconds"],
+        "cube_key":   cube["cube_key"],
+        "ok": True
+    }
+
+@app.get("/cubes/{cube_id}/key")
+async def get_cube_key(cube_id: int, user=Depends(get_current_user)):
+    """Owner-only: retrieve the cube's invite key."""
+    key = db.get_cube_key(cube_id, user["id"])
+    if key is None:
+        raise HTTPException(status_code=403, detail="Только создатель может видеть ключ")
+    return {"cube_key": key, "ok": True}
 
 @app.get("/cubes/{cube_id}/messages")
 async def get_messages(cube_id: int, limit: int = 50):
