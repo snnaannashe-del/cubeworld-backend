@@ -243,7 +243,27 @@ class ActivityEventRequest(BaseModel):
 @app.post("/activity/event")
 async def activity_event(body: ActivityEventRequest, user=Depends(get_current_user)):
     db.record_activity(user["id"], body.event)
-    return {"ok": True}
+    # Milestone rewards — award CUBE at activity milestones and notify via WS
+    stats = db.get_my_activity_stats(user["id"])
+    bonus = 0
+    reason = ""
+    if body.event == "message":
+        msgs = stats.get("messages", 0)
+        if msgs > 0 and msgs % 10 == 0:
+            bonus, reason = 5, f"+5 CUBE · {msgs} сообщений"
+    elif body.event == "post":
+        posts = stats.get("posts", 0)
+        if posts > 0 and posts % 5 == 0:
+            bonus, reason = 10, f"+10 CUBE · {posts} постов"
+    elif body.event == "invite":
+        invites = stats.get("invites", 0)
+        if invites > 0 and invites % 1 == 0:
+            bonus, reason = 50, "+50 CUBE · реферал"
+    if bonus:
+        db.add_cube_balance(user["id"], float(bonus), "activity", description=reason)
+        new_bal = db.get_cube_balance(user["id"])
+        await _notify_user(user["id"], {"type": "balance_update", "balance": new_bal, "reason": reason})
+    return {"ok": True, "bonus": bonus}
 
 # ── Rewards ───────────────────────────────────────────────────────────────────
 
@@ -386,8 +406,19 @@ async def health():
 
 # ── WebSocket: per-cube rooms ─────────────────────────────────────────────────
 # cube_rooms: { cube_id_str: { user_id_str: {"ws": websocket, "display_name": str} } }
+# user_ws: { user_id_str: websocket }  — tracks the most recent WS for each user (for direct notifications)
 
 cube_rooms: Dict[str, Dict[str, dict]] = {}
+user_ws: Dict[str, object] = {}
+
+async def _notify_user(user_id: int, msg: dict):
+    """Send a direct message to a user's current WebSocket, if connected."""
+    ws = user_ws.get(str(user_id))
+    if ws:
+        try:
+            await ws.send_json(msg)
+        except Exception:
+            pass
 
 async def _broadcast(cube_id: str, msg: dict, exclude: str = None):
     for uid, info in list(cube_rooms.get(cube_id, {}).items()):
@@ -424,6 +455,7 @@ async def ws_cube(websocket: WebSocket, token: str, cube_id: str):
         if cube_id not in cube_rooms:
             cube_rooms[cube_id] = {}
         cube_rooms[cube_id][user_id] = {"ws": websocket, "display_name": display_name}
+        user_ws[user_id] = websocket  # register for direct notifications
 
         online = len(cube_rooms[cube_id])
 
@@ -576,6 +608,7 @@ async def ws_cube(websocket: WebSocket, token: str, cube_id: str):
     finally:
         if user_id and cube_id in cube_rooms:
             cube_rooms[cube_id].pop(user_id, None)
+            user_ws.pop(user_id, None)  # unregister from direct notifications
             if not cube_rooms[cube_id]:
                 del cube_rooms[cube_id]
             else:
