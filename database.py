@@ -622,7 +622,7 @@ def get_cube_by_key(cube_key: str):
                             CAST((julianday(expires_at)-julianday('now'))*86400 AS INTEGER) as life_left_seconds
                      FROM cubes WHERE cube_key=? AND is_active=1 AND expires_at>datetime('now')""", (cube_key,))
     row = c.fetchone(); conn.close()
-    return _fetchone(row) if row else None
+    return dict(row) if row else None
 
 def get_cube_key(cube_id: int, owner_id: int):
     """Return cube_key only to the cube owner."""
