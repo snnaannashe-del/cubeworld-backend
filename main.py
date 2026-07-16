@@ -101,6 +101,12 @@ class CreateCubeRequest(BaseModel):
 class JoinCubeRequest(BaseModel):
     cube_key: str
 
+class SetUsernameRequest(BaseModel):
+    username: str
+
+class SetCubeHandleRequest(BaseModel):
+    handle: str
+
 class CreatePostRequest(BaseModel):
     content: str
 
@@ -190,6 +196,7 @@ async def logout(body: RefreshRequest):
 async def get_me(user=Depends(get_current_user)):
     return {"id": user["id"], "key_prefix": user["key_prefix"], "key_type": user["key_type"],
             "display_name": user["display_name"], "avatar_url": user["avatar_url"],
+            "username": user.get("username"), "uid": f"#{user['id']}",
             "cube_balance": user["cube_balance"], "created_at": user["created_at"],
             "last_seen": user["last_seen"]}
 
@@ -197,6 +204,71 @@ async def get_me(user=Depends(get_current_user)):
 async def update_me(body: UpdateProfileRequest, user=Depends(get_current_user)):
     db.update_profile(user["id"], body.display_name, body.avatar_url)
     return {"ok": True}
+
+@app.post("/me/username")
+async def set_username(body: SetUsernameRequest, user=Depends(get_current_user)):
+    """Set @username. 4-24 chars, a-z 0-9 underscore only."""
+    import re
+    uname = body.username.strip().lower().lstrip('@')
+    if not re.match(r'^[a-z0-9_]{4,24}$', uname):
+        raise HTTPException(400, "Юзернейм: 4-24 символа, только a-z 0-9 _")
+    ok = db.set_username(user["id"], uname)
+    if not ok:
+        raise HTTPException(409, "Этот @username уже занят")
+    return {"ok": True, "username": uname}
+
+# ── User Search ────────────────────────────────────────────────────────────────
+
+@app.get("/users/search")
+async def search_users(q: str = "", limit: int = 20, user=Depends(get_current_user)):
+    """Search users by @username, display_name, key_prefix, or #ID."""
+    if not q.strip():
+        raise HTTPException(400, "Пустой запрос")
+    results = db.search_users(q.strip(), min(limit, 50), exclude_id=user["id"])
+    return [
+        {
+            "id":           r["id"],
+            "uid":          f"#{r['id']}",
+            "username":     r.get("username"),
+            "display_name": r.get("display_name") or r.get("key_prefix",""),
+            "avatar_url":   r.get("avatar_url"),
+            "key_type":     r.get("key_type","free"),
+            "handle":       f"@{r['username']}" if r.get("username") else f"#{r['id']}",
+        }
+        for r in results
+    ]
+
+@app.get("/cubes/search")
+async def search_cubes_endpoint(q: str = "", limit: int = 20):
+    """Search cubes by @handle or name."""
+    if not q.strip():
+        raise HTTPException(400, "Пустой запрос")
+    results = db.search_cubes(q.strip(), min(limit, 50))
+    return [
+        {
+            "id":     r["id"],
+            "uid":    f"#G{r['id']}",
+            "name":   r["name"],
+            "handle": f"@{r['handle']}" if r.get("handle") else f"#G{r['id']}",
+            "icon":   r.get("icon","🧊"),
+            "color":  r.get("color","#0095F6"),
+            "type":   r.get("type","public"),
+            "life_left": r.get("life_left_seconds",0),
+        }
+        for r in results
+    ]
+
+@app.post("/cubes/{cube_id}/handle")
+async def set_cube_handle(cube_id: int, body: SetCubeHandleRequest, user=Depends(get_current_user)):
+    """Set @handle for a cube (owner only). 3-24 chars a-z 0-9 _"""
+    import re
+    handle = body.handle.strip().lower().lstrip('@')
+    if not re.match(r'^[a-z0-9_]{3,24}$', handle):
+        raise HTTPException(400, "Handle: 3-24 символа, только a-z 0-9 _")
+    ok = db.set_cube_handle(cube_id, user["id"], handle)
+    if not ok:
+        raise HTTPException(409, "Этот @handle уже занят или ты не владелец")
+    return {"ok": True, "handle": handle}
 
 @app.post("/wallet/link")
 async def link_wallet(body: WalletLinkRequest, user=Depends(get_current_user)):
