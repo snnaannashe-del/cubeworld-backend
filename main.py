@@ -773,8 +773,8 @@ async def ws_cube(websocket: WebSocket, token: str, cube_id: str):
                     "duration": duration,
                     "created_at": datetime.utcnow().isoformat()
                 }
-                # Send to recipient
-                await _send_to_user(cube_id, to_uid, dm_out)
+                # Send to recipient via global user_ws (works across all cubes)
+                await _notify_user(int(to_uid), dm_out)
                 # Echo to sender
                 await websocket.send_json(dm_out)
 
