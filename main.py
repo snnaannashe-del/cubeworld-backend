@@ -6,7 +6,7 @@ import jwt
 from datetime import datetime, timedelta
 from typing import Optional, Dict
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
@@ -19,7 +19,7 @@ ACCESS_TTL   = int(os.getenv("ACCESS_TTL_MINUTES", "60"))
 REFRESH_TTL  = int(os.getenv("REFRESH_TTL_DAYS", "30"))
 ADMIN_SECRET = os.getenv("ADMIN_SECRET", "")
 
-app = FastAPI(title="CubeWorld API", version="3.0.0")
+app = FastAPI(title="CubeWorld API", version="4.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"])
 
@@ -79,6 +79,16 @@ class UpdateProfileRequest(BaseModel):
 class WalletLinkRequest(BaseModel):
     address: str
     chain_id: int = 137
+    signature: Optional[str] = None  # proof of ownership
+
+class RewardClaimRequest(BaseModel):
+    month: Optional[str] = None   # YYYY-MM, defaults to current
+    wallet_address: str
+
+class PremiumActivateRequest(BaseModel):
+    months: int = 1
+    payment_method: Optional[str] = None
+    tx_hash: Optional[str] = None
 
 class CreateCubeRequest(BaseModel):
     name: str
@@ -98,6 +108,9 @@ class CreateSignalRequest(BaseModel):
     tp_price: float = 0.0
     sl_price: float = 0.0
     content: str = ""
+
+class ReactRequest(BaseModel):
+    emoji: str
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
@@ -152,7 +165,8 @@ async def login_with_key(body: LoginRequest, request: Request):
 
     return {"key_prefix": user["key_prefix"], "key_type": key_type,
             "access_token": access_token, "refresh_token": refresh_raw,
-            "cube_balance": user["cube_balance"], "display_name": user["display_name"]}
+            "cube_balance": user["cube_balance"], "display_name": user["display_name"],
+            "user_id": user_id}
 
 @app.post("/auth/refresh")
 async def refresh_tokens(body: RefreshRequest):
@@ -191,6 +205,86 @@ async def link_wallet(body: WalletLinkRequest, user=Depends(get_current_user)):
     db.link_wallet(user["id"], body.address, body.chain_id)
     return {"ok": True, "address": body.address}
 
+@app.get("/wallet/my")
+async def my_wallets(user=Depends(get_current_user)):
+    conn = db.get_db()
+    rows = conn.execute(
+        "SELECT address,chain_id,linked_at FROM wallets WHERE user_id=? ORDER BY id DESC",
+        (user["id"],)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+# ── Premium ───────────────────────────────────────────────────────────────────
+
+@app.get("/premium/status")
+async def premium_status(user=Depends(get_current_user)):
+    info = db.get_premium_info(user["id"])
+    is_active = db.is_premium(user["id"])
+    return {"is_premium": is_active, "info": info}
+
+@app.post("/premium/activate")
+async def activate_premium(body: PremiumActivateRequest, user=Depends(get_current_user)):
+    db.activate_premium(user["id"], body.months, body.payment_method, body.tx_hash)
+    db.record_activity(user["id"], "invite")  # reward for upgrading
+    return {"ok": True, "message": f"Premium активирован на {body.months} мес."}
+
+# ── Activity tracking ─────────────────────────────────────────────────────────
+
+@app.post("/activity/ping")
+async def activity_ping(user=Depends(get_current_user)):
+    """Frontend calls this every 60s while tab is active."""
+    db.ping_activity(user["id"])
+    return {"ok": True}
+
+@app.get("/activity/stats")
+async def activity_stats(user=Depends(get_current_user)):
+    stats = db.get_my_activity_stats(user["id"])
+    is_prem = db.is_premium(user["id"])
+    return {**stats, "is_premium": is_prem}
+
+class ActivityEventRequest(BaseModel):
+    event: str  # message | post | reaction_received | voice | invite
+
+@app.post("/activity/event")
+async def activity_event(body: ActivityEventRequest, user=Depends(get_current_user)):
+    db.record_activity(user["id"], body.event)
+    return {"ok": True}
+
+# ── Rewards ───────────────────────────────────────────────────────────────────
+
+@app.get("/rewards/estimate")
+async def reward_estimate(user=Depends(get_current_user)):
+    return db.estimate_reward(user["id"])
+
+@app.post("/rewards/claim")
+async def reward_claim(body: RewardClaimRequest, user=Depends(get_current_user)):
+    from datetime import datetime as _dt
+    month = body.month or _dt.utcnow().strftime('%Y-%m')
+    amount, err = db.claim_reward(user["id"], month, body.wallet_address)
+    if err:
+        raise HTTPException(400, err)
+    return {"ok": True, "usd": amount, "wallet": body.wallet_address,
+            "message": f"Заявка на ${amount:.2f} создана. Выплата в течение 24ч."}
+
+@app.get("/rewards/history")
+async def reward_history(user=Depends(get_current_user)):
+    conn = db.get_db()
+    rows = conn.execute(
+        "SELECT month,score,usd_amount,wallet_address,status,created_at FROM reward_claims WHERE user_id=? ORDER BY id DESC",
+        (user["id"],)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+@app.get("/rewards/pool")
+async def reward_pool_info():
+    conn = db.get_db()
+    row = conn.execute("SELECT * FROM reward_pool WHERE id=1").fetchone()
+    conn.close()
+    if not row: return {"total_usd": 1000000, "used_usd": 0, "remaining_usd": 1000000}
+    r = dict(row)
+    r["remaining_usd"] = r["total_usd"] - r["used_usd"]
+    return r
+
 @app.get("/cube/balance")
 async def cube_balance(user=Depends(get_current_user)):
     return {"balance": db.get_cube_balance(user["id"]), "key_type": user["key_type"]}
@@ -216,6 +310,26 @@ async def create_cube(body: CreateCubeRequest, user=Depends(get_current_user)):
 @app.get("/cubes/{cube_id}/messages")
 async def get_messages(cube_id: int, limit: int = 50):
     return db.get_messages(cube_id, min(limit, 100))
+
+@app.get("/cubes/{cube_id}/online")
+async def cube_online_users(cube_id: str):
+    """Return list of online users in this cube's WS room."""
+    room = cube_rooms.get(cube_id, {})
+    users = [{"user_id": uid, "display_name": info["display_name"]}
+             for uid, info in room.items()]
+    return {"online": len(users), "users": users}
+
+@app.post("/messages/{msg_id}/react")
+async def react_to_message(msg_id: int, body: ReactRequest, user=Depends(get_current_user)):
+    emoji = body.emoji[:8]
+    display_name = db.get_display_name(user["id"])
+    result = db.toggle_reaction(msg_id, user["id"], display_name, emoji)
+    return {**result, "message_id": msg_id, "ok": True}
+
+@app.get("/dm/{other_user_id}")
+async def get_dm_history(other_user_id: int, user=Depends(get_current_user)):
+    history = db.get_dm_history(user["id"], other_user_id)
+    return history
 
 @app.get("/cubes/{cube_id}/posts")
 async def get_posts(cube_id: int):
@@ -249,10 +363,6 @@ async def create_signal(cube_id: int, body: CreateSignalRequest, user=Depends(ge
                                body.entry_price, body.tp_price, body.sl_price, body.content[:500])
     return {"id": sig_id, "ok": True}
 
-@app.get("/cubes/{cube_id}/online")
-async def cube_online_count(cube_id: str):
-    return {"online": len(cube_rooms.get(cube_id, {}))}
-
 # ── Admin / Stats ─────────────────────────────────────────────────────────────
 
 @app.post("/admin/upgrade")
@@ -271,27 +381,38 @@ async def admin_upgrade(request: Request):
 @app.get("/stats")
 async def stats():
     s = db.get_stats()
-    # Add realtime WS connected count
     s["connected_ws"] = sum(len(v) for v in cube_rooms.values())
     return s
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "3.0.0"}
+    return {"status": "ok", "version": "4.0.0"}
 
 # ── WebSocket: per-cube rooms ─────────────────────────────────────────────────
-# cube_rooms: { cube_id_str: { user_id_str: (websocket, display_name) } }
+# cube_rooms: { cube_id_str: { user_id_str: {"ws": websocket, "display_name": str} } }
 
-cube_rooms: Dict[str, Dict[str, tuple]] = {}
+cube_rooms: Dict[str, Dict[str, dict]] = {}
 
 async def _broadcast(cube_id: str, msg: dict, exclude: str = None):
-    for uid, (ws, _) in list(cube_rooms.get(cube_id, {}).items()):
+    for uid, info in list(cube_rooms.get(cube_id, {}).items()):
         if uid == exclude:
             continue
         try:
-            await ws.send_json(msg)
+            await info["ws"].send_json(msg)
         except Exception:
             pass
+
+async def _send_to_user(cube_id: str, user_id: str, msg: dict):
+    info = cube_rooms.get(cube_id, {}).get(user_id)
+    if info:
+        try:
+            await info["ws"].send_json(msg)
+        except Exception:
+            pass
+
+def _online_list(cube_id: str):
+    return [{"user_id": uid, "display_name": info["display_name"]}
+            for uid, info in cube_rooms.get(cube_id, {}).items()]
 
 @app.websocket("/ws/{token}/{cube_id}")
 async def ws_cube(websocket: WebSocket, token: str, cube_id: str):
@@ -306,17 +427,19 @@ async def ws_cube(websocket: WebSocket, token: str, cube_id: str):
 
         if cube_id not in cube_rooms:
             cube_rooms[cube_id] = {}
-        cube_rooms[cube_id][user_id] = (websocket, display_name)
+        cube_rooms[cube_id][user_id] = {"ws": websocket, "display_name": display_name}
 
         online = len(cube_rooms[cube_id])
 
         await websocket.send_json({
             "type": "joined", "user_id": user_id,
-            "display_name": display_name, "online": online
+            "display_name": display_name, "online": online,
+            "online_users": _online_list(cube_id)
         })
         await _broadcast(cube_id, {
             "type": "user_joined", "user_id": user_id,
-            "display_name": display_name, "online": online
+            "display_name": display_name, "online": online,
+            "online_users": _online_list(cube_id)
         }, exclude=user_id)
 
         while True:
@@ -326,14 +449,52 @@ async def ws_cube(websocket: WebSocket, token: str, cube_id: str):
             if msg_type == "ping":
                 await websocket.send_json({"type": "pong"})
 
+            elif msg_type == "typing":
+                # Broadcast typing event to others
+                await _broadcast(cube_id, {
+                    "type": "typing",
+                    "user_id": user_id,
+                    "display_name": display_name
+                }, exclude=user_id)
+
             elif msg_type == "message":
-                content = str(data.get("content", "")).strip()[:500]
+                content      = str(data.get("content", "")).strip()[:2000]
+                chat_type    = data.get("msg_type", "text")
+                reply_to_id  = data.get("reply_to_id")
+                expires_secs = data.get("expires_secs")
+                file_name    = data.get("file_name")
+                file_size    = data.get("file_size")
+                file_data    = data.get("file_data")   # base64, stored only for files/voice
+                duration     = data.get("duration")
+
                 if not content:
                     continue
-                # Save to DB if cube_id is numeric
+
+                expires_at = None
+                if expires_secs:
+                    try:
+                        expires_at = (datetime.utcnow() + timedelta(seconds=int(expires_secs))).strftime("%Y-%m-%d %H:%M:%S")
+                    except Exception:
+                        pass
+
+                # Save to DB if numeric cube_id (not seed cube)
                 msg_id = None
                 if cube_id.isdigit():
-                    msg_id = db.save_message(int(cube_id), int(user_id), display_name, content)
+                    # Don't store large binary file_data for voice (keep it transient for now)
+                    store_data = file_data if chat_type == 'file' else None
+                    msg_id = db.save_message(
+                        int(cube_id), int(user_id), display_name, content,
+                        msg_type=chat_type, reply_to_id=reply_to_id,
+                        expires_at=expires_at, file_name=file_name,
+                        file_size=file_size, file_data=store_data, duration=duration)
+
+                # Get reply preview if replying
+                reply_preview = None
+                if reply_to_id:
+                    orig = db.get_message_by_id(reply_to_id)
+                    if orig:
+                        reply_preview = {"id": orig["id"], "author": orig["display_name"],
+                                         "text": (orig["content"] or "")[:80]}
 
                 out = {
                     "type": "message",
@@ -341,9 +502,73 @@ async def ws_cube(websocket: WebSocket, token: str, cube_id: str):
                     "user_id": user_id,
                     "display_name": display_name,
                     "content": content,
+                    "msg_type": chat_type,
+                    "reply_to_id": reply_to_id,
+                    "reply_preview": reply_preview,
+                    "file_name": file_name,
+                    "file_size": file_size,
+                    "file_data": file_data,   # pass through for voice/image
+                    "duration": duration,
+                    "expires_secs": expires_secs,
                     "created_at": datetime.utcnow().isoformat()
                 }
                 await _broadcast(cube_id, out)  # include sender
+
+            elif msg_type == "react":
+                # {type:"react", msg_id:X, emoji:"👍"}
+                react_msg_id = data.get("msg_id")
+                emoji = str(data.get("emoji", ""))[:8]
+                if react_msg_id and emoji:
+                    result = db.toggle_reaction(int(react_msg_id), int(user_id), display_name, emoji)
+                    await _broadcast(cube_id, {
+                        "type": "react",
+                        "msg_id": react_msg_id,
+                        "emoji": emoji,
+                        "user_id": user_id,
+                        "counts": result["counts"]
+                    })
+
+            elif msg_type == "dm":
+                # {type:"dm", to_user_id:"X", content:"...", msg_type:"text", ...}
+                to_uid = str(data.get("to_user_id", ""))
+                dm_content = str(data.get("content", "")).strip()[:2000]
+                dm_type    = data.get("msg_type", "text")
+                file_name  = data.get("file_name")
+                file_size  = data.get("file_size")
+                file_data  = data.get("file_data")
+                duration   = data.get("duration")
+                if not dm_content or not to_uid:
+                    continue
+
+                dm_id = None
+                try:
+                    dm_id = db.save_dm(int(user_id), int(to_uid), dm_content, msg_type=dm_type,
+                                       file_name=file_name, file_size=file_size,
+                                       file_data=None, duration=duration)
+                except Exception:
+                    pass
+
+                dm_out = {
+                    "type": "dm",
+                    "id": dm_id,
+                    "from_user_id": user_id,
+                    "to_user_id": to_uid,
+                    "display_name": display_name,
+                    "content": dm_content,
+                    "msg_type": dm_type,
+                    "file_name": file_name,
+                    "file_size": file_size,
+                    "file_data": file_data,
+                    "duration": duration,
+                    "created_at": datetime.utcnow().isoformat()
+                }
+                # Send to recipient
+                await _send_to_user(cube_id, to_uid, dm_out)
+                # Echo to sender
+                await websocket.send_json(dm_out)
+
+            elif msg_type == "system":
+                pass  # ignore client-side system messages
 
     except WebSocketDisconnect:
         pass
@@ -359,8 +584,11 @@ async def ws_cube(websocket: WebSocket, token: str, cube_id: str):
                 del cube_rooms[cube_id]
             else:
                 await _broadcast(cube_id, {
-                    "type": "user_left", "user_id": user_id,
-                    "online": len(cube_rooms.get(cube_id, {}))
+                    "type": "user_left",
+                    "user_id": user_id,
+                    "display_name": display_name,
+                    "online": len(cube_rooms.get(cube_id, {})),
+                    "online_users": _online_list(cube_id)
                 })
 
 # Keep old /ws/{token} for backward-compat (global room)
