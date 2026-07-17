@@ -4,7 +4,7 @@ import string
 import hashlib
 import jwt
 from datetime import datetime, timedelta
-from typing import Optional, Dict
+from typing import Optional, Dict, Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, Request, BackgroundTasks, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -132,10 +132,13 @@ class CreatePostRequest(BaseModel):
 class CreateVideoPostRequest(BaseModel):
     cube_id: Optional[int] = 1
     video_url: Optional[str] = ""
-    description: str
+    description: Optional[str] = ""
     music: Optional[str] = ""
     post_type: Optional[str] = "short"   # "short" | "ball"
     image_url: Optional[str] = ""
+    file_url: Optional[str] = ""
+    title: Optional[str] = ""
+    tags: Optional[Any] = None  # list or comma-string
 
 class GroupMessageRequest(BaseModel):
     content: str
@@ -681,27 +684,51 @@ async def get_following_feed(user=Depends(get_current_user)):
 
 @app.post("/feed/post")
 async def create_feed_post(body: CreateVideoPostRequest, user=Depends(get_current_user)):
+    import json as _json
     desc = (body.description or '').strip()[:2000]
-    if not desc:
-        raise HTTPException(400, "Description required")
     video_url = (body.video_url or '').strip()[:500]
     music = (body.music or '').strip()[:200]
-    display_name = db.get_display_name(user["id"])
+    title = (body.title or '').strip()[:300]
+    image_url = (body.image_url or body.file_url or '').strip()[:500]
     post_type = (body.post_type or 'short').lower()
-    image_url = (body.image_url or '').strip()[:500]
+    display_name = db.get_display_name(user["id"])
+    # Normalize tags to JSON string
+    raw_tags = body.tags
+    if isinstance(raw_tags, list):
+        tags_str = _json.dumps(raw_tags, ensure_ascii=False)
+    elif isinstance(raw_tags, str) and raw_tags.strip():
+        tags_str = _json.dumps([t.strip() for t in raw_tags.split(',') if t.strip()], ensure_ascii=False)
+    else:
+        tags_str = '[]'
+    # Require at least something
+    if not desc and not title and not video_url and not image_url:
+        raise HTTPException(400, "Add title, description, or media")
     pid = db.create_video_post(body.cube_id or 1, user["id"], display_name, video_url, desc, music)
     # Store extra fields if columns exist
     try:
         import database as _db2
         conn = _db2.get_db(); cc = conn.cursor()
-        cc.execute(_db2._q("UPDATE posts SET post_type=?,image_url=? WHERE id=?"), (post_type, image_url, pid))
+        # Add missing columns gracefully
+        for col_sql in [
+            "ALTER TABLE posts ADD COLUMN post_type TEXT DEFAULT 'short'",
+            "ALTER TABLE posts ADD COLUMN image_url TEXT DEFAULT ''",
+            "ALTER TABLE posts ADD COLUMN title TEXT DEFAULT ''",
+            "ALTER TABLE posts ADD COLUMN tags TEXT DEFAULT '[]'",
+        ]:
+            try: cc.execute(col_sql)
+            except Exception: pass
+        cc.execute("UPDATE posts SET post_type=?,image_url=?,title=?,tags=? WHERE id=?",
+                   (post_type, image_url, title, tags_str, pid))
         conn.commit(); conn.close()
     except Exception:
         pass
+    tags_out = []
+    try: tags_out = _json.loads(tags_str)
+    except Exception: pass
     return {"id": pid, "user_id": user["id"], "display_name": display_name,
-            "video_url": video_url, "image_url": image_url, "description": desc,
-            "music": music, "post_type": post_type,
-            "likes": 0, "comment_count": 0, "view_count": 0,
+            "video_url": video_url, "image_url": image_url, "title": title,
+            "description": desc, "music": music, "post_type": post_type,
+            "tags": tags_out, "likes": 0, "comment_count": 0, "view_count": 0,
             "created_at": datetime.utcnow().isoformat(), "ok": True}
 
 @app.post("/feed/{post_id}/like")
