@@ -120,6 +120,15 @@ class SetGroupHandleRequest(BaseModel):
 class CreatePostRequest(BaseModel):
     content: str
 
+class CreateVideoPostRequest(BaseModel):
+    cube_id: Optional[int] = 1
+    video_url: Optional[str] = ""
+    description: str
+    music: Optional[str] = ""
+
+class AddCommentRequest(BaseModel):
+    content: str
+
 class CreateSignalRequest(BaseModel):
     ticker: str
     direction: str = "LONG"
@@ -530,6 +539,60 @@ async def react_to_message(msg_id: int, body: ReactRequest, user=Depends(get_cur
 async def get_dm_history(other_user_id: int, user=Depends(get_current_user)):
     history = db.get_dm_history(user["id"], other_user_id)
     return history
+
+# ── Global Video Feed ────────────────────────────────────────────────────────
+
+@app.get("/feed")
+async def get_global_feed(limit: int = 30, offset: int = 0):
+    return db.get_global_feed(limit=min(limit,100), offset=offset)
+
+@app.get("/feed/following")
+async def get_following_feed(user=Depends(get_current_user)):
+    return db.get_following_feed(user["id"])
+
+@app.post("/feed/post")
+async def create_feed_post(body: CreateVideoPostRequest, user=Depends(get_current_user)):
+    desc = (body.description or '').strip()[:2000]
+    if not desc:
+        raise HTTPException(400, "Description required")
+    video_url = (body.video_url or '').strip()[:500]
+    music = (body.music or '').strip()[:200]
+    display_name = db.get_display_name(user["id"])
+    pid = db.create_video_post(body.cube_id or 1, user["id"], display_name, video_url, desc, music)
+    return {"id": pid, "user_id": user["id"], "display_name": display_name,
+            "video_url": video_url, "description": desc, "music": music,
+            "likes": 0, "comment_count": 0, "created_at": datetime.utcnow().isoformat(), "ok": True}
+
+@app.post("/feed/{post_id}/like")
+async def like_feed_post(post_id: int, user=Depends(get_current_user)):
+    likes, liked = db.like_post(post_id, user["id"])
+    return {"likes": likes, "liked": liked, "ok": True}
+
+@app.get("/feed/{post_id}/comments")
+async def get_feed_comments(post_id: int):
+    return db.get_post_comments(post_id)
+
+@app.post("/feed/{post_id}/comment")
+async def add_feed_comment(post_id: int, body: AddCommentRequest, user=Depends(get_current_user)):
+    content = (body.content or '').strip()[:500]
+    if not content:
+        raise HTTPException(400, "Content required")
+    display_name = db.get_display_name(user["id"])
+    cid = db.add_post_comment(post_id, user["id"], display_name, content)
+    return {"id": cid, "display_name": display_name, "content": content,
+            "created_at": datetime.utcnow().isoformat(), "ok": True}
+
+@app.post("/follow/{target_id}")
+async def follow(target_id: int, user=Depends(get_current_user)):
+    ok = db.follow_user(user["id"], target_id)
+    return {"ok": ok, "following": True}
+
+@app.delete("/follow/{target_id}")
+async def unfollow(target_id: int, user=Depends(get_current_user)):
+    db.unfollow_user(user["id"], target_id)
+    return {"ok": True, "following": False}
+
+# ── Cube Posts (legacy) ───────────────────────────────────────────────────────
 
 @app.get("/cubes/{cube_id}/posts")
 async def get_posts(cube_id: int):
