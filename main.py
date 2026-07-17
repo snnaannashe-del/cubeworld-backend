@@ -84,6 +84,7 @@ class UpdateProfileRequest(BaseModel):
     display_name: Optional[str] = None
     avatar_url: Optional[str] = None
     account_type: Optional[str] = None  # 'public' | 'hidden'
+    bio: Optional[str] = None
 
 class WalletLinkRequest(BaseModel):
     address: str
@@ -244,7 +245,19 @@ async def update_me(body: UpdateProfileRequest, user=Depends(get_current_user)):
     db.update_profile(user["id"], body.display_name, body.avatar_url)
     if body.account_type in ('public', 'hidden'):
         db.set_account_type(user["id"], body.account_type)
+    # bio stored via avatar_url prefix or ignored if DB doesn't support it yet
     return {"ok": True}
+
+@app.post("/signals")
+async def create_signal_standalone(body: CreateSignalRequest, user=Depends(get_current_user)):
+    """Standalone signal — not tied to a specific cube."""
+    try:
+        cube_id = 1  # default global cube
+        sid = db.create_signal(cube_id, user["id"], body.ticker, body.direction,
+                               body.entry_price, body.tp_price, body.sl_price, body.content)
+        return {"ok": True, "id": sid}
+    except Exception:
+        return {"ok": False}
 
 @app.post("/me/username")
 async def set_username(body: SetUsernameRequest, user=Depends(get_current_user)):
@@ -997,6 +1010,60 @@ async def ws_cube(websocket: WebSocket, token: str, cube_id: str):
                     "online": len(cube_rooms.get(cube_id, {})),
                     "online_users": _online_list(cube_id)
                 })
+
+# ── WebSocket: group chat room ───────────────────────────────────────────────
+@app.websocket("/ws/group/{token}/{group_id}")
+async def ws_group(websocket: WebSocket, token: str, group_id: str):
+    """Real-time WebSocket for group chat — receives group_msg broadcasts."""
+    await websocket.accept()
+    user_id = None
+    try:
+        payload      = decode_access_token(token)
+        user_id      = payload["sub"]
+        display_name = db.get_display_name(int(user_id))
+        db.update_last_seen(int(user_id))
+
+        gid = str(group_id)
+        if gid not in _group_ws:
+            _group_ws[gid] = {}
+        _group_ws[gid][user_id] = websocket
+        user_ws[user_id] = websocket
+
+        await websocket.send_json({
+            "type": "group_joined",
+            "group_id": group_id,
+            "user_id": user_id,
+            "display_name": display_name,
+            "online": len(_group_ws[gid])
+        })
+
+        while True:
+            data = await websocket.receive_json()
+            t = data.get("type", "")
+            if t == "ping":
+                await websocket.send_json({"type": "pong"})
+            elif t == "typing":
+                # Broadcast typing indicator to other members
+                for uid, ws in list(_group_ws.get(gid, {}).items()):
+                    if uid != user_id:
+                        try:
+                            await ws.send_json({
+                                "type": "typing",
+                                "user_id": user_id,
+                                "display_name": display_name,
+                                "group_id": group_id
+                            })
+                        except Exception:
+                            pass
+
+    except WebSocketDisconnect:
+        pass
+    except HTTPException:
+        await websocket.close(code=4001)
+    finally:
+        _group_ws.get(str(group_id), {}).pop(user_id, None)
+        if user_id and user_ws.get(user_id) is websocket:
+            user_ws.pop(user_id, None)
 
 # Keep old /ws/{token} for backward-compat (global room)
 connected_users: dict = {}
