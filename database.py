@@ -230,6 +230,25 @@ def init_db():
             user_id INTEGER NOT NULL,
             PRIMARY KEY (post_id, user_id)
         )""")
+        # Video feed columns (PG safe ADD IF NOT EXISTS)
+        for _col, _def in [('video_url','TEXT'), ('description','TEXT'), ('music','TEXT'),
+                            ('views','INTEGER NOT NULL DEFAULT 0'), ('comment_count','INTEGER NOT NULL DEFAULT 0')]:
+            try: c.execute(f"ALTER TABLE posts ADD COLUMN IF NOT EXISTS {_col} {_def}")
+            except: pass
+        c.execute("""CREATE TABLE IF NOT EXISTS follows (
+            follower_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            following_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (follower_id, following_id)
+        )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS post_comments (
+            id SERIAL PRIMARY KEY,
+            post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+            user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            display_name TEXT,
+            content TEXT NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        )""")
         c.execute("""CREATE TABLE IF NOT EXISTS signals (
             id SERIAL PRIMARY KEY,
             cube_id INTEGER NOT NULL,
@@ -434,6 +453,27 @@ def init_db():
             user_id INTEGER NOT NULL,
             PRIMARY KEY (post_id, user_id)
         )""")
+        # Video feed extras (migrations so existing DBs get new columns)
+        _sqlite_add_col('posts', 'video_url', 'TEXT DEFAULT NULL')
+        _sqlite_add_col('posts', 'description', 'TEXT DEFAULT NULL')
+        _sqlite_add_col('posts', 'music', 'TEXT DEFAULT NULL')
+        _sqlite_add_col('posts', 'views', 'INTEGER NOT NULL DEFAULT 0')
+        _sqlite_add_col('posts', 'comment_count', 'INTEGER NOT NULL DEFAULT 0')
+        c.execute("""CREATE TABLE IF NOT EXISTS follows (
+            follower_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            following_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (follower_id, following_id)
+        )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS post_comments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+            user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            display_name TEXT,
+            content TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )""")
+        conn.commit()
         c.execute("""CREATE TABLE IF NOT EXISTS signals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             cube_id INTEGER NOT NULL,
@@ -1136,6 +1176,68 @@ def like_post(post_id, user_id):
     row = c.fetchone()
     conn.close(); return (dict(row)["likes"] if row else 0, liked)
 
+
+# ── Video Feed ────────────────────────────────────────────────────────────────
+
+def create_video_post(cube_id, user_id, display_name, video_url, description, music):
+    conn = get_db()
+    sql = _q("INSERT INTO posts (cube_id,user_id,display_name,content,video_url,description,music) VALUES (?,?,?,?,?,?,?)")
+    pid = _execute_returning(conn, sql, (cube_id, user_id, display_name, description or '', video_url or '', description or '', music or ''))
+    conn.commit(); conn.close(); return pid
+
+def get_global_feed(limit=30, offset=0):
+    conn = get_db(); c = conn.cursor()
+    sql = _q("SELECT id,cube_id,user_id,display_name,content,video_url,description,music,likes,views,comment_count,created_at FROM posts ORDER BY created_at DESC LIMIT ? OFFSET ?")
+    c.execute(sql, (limit, offset))
+    rows = c.fetchall(); conn.close(); return _fetchall(rows)
+
+def get_following_feed(user_id, limit=30):
+    conn = get_db(); c = conn.cursor()
+    sql = _q("""SELECT p.id,p.cube_id,p.user_id,p.display_name,p.content,p.video_url,p.description,p.music,p.likes,p.views,p.comment_count,p.created_at
+                FROM posts p
+                JOIN follows f ON f.following_id=p.user_id
+                WHERE f.follower_id=?
+                ORDER BY p.created_at DESC LIMIT ?""")
+    c.execute(sql, (user_id, limit))
+    rows = c.fetchall(); conn.close(); return _fetchall(rows)
+
+def like_feed_post(post_id, user_id):
+    return like_post(post_id, user_id)  # reuse existing
+
+def get_post_comments(post_id, limit=100):
+    conn = get_db(); c = conn.cursor()
+    c.execute(_q("SELECT id,post_id,user_id,display_name,content,created_at FROM post_comments WHERE post_id=? ORDER BY created_at ASC LIMIT ?"), (post_id, limit))
+    rows = c.fetchall(); conn.close(); return _fetchall(rows)
+
+def add_post_comment(post_id, user_id, display_name, content):
+    conn = get_db()
+    sql = _q("INSERT INTO post_comments (post_id,user_id,display_name,content) VALUES (?,?,?,?)")
+    cid = _execute_returning(conn, sql, (post_id, user_id, display_name, content))
+    # Increment comment_count
+    conn2 = get_db(); c2 = conn2.cursor()
+    c2.execute(_q("UPDATE posts SET comment_count=comment_count+1 WHERE id=?"), (post_id,))
+    conn2.commit(); conn2.close()
+    conn.commit(); conn.close(); return cid
+
+def follow_user(follower_id, following_id):
+    if follower_id == following_id: return False
+    conn = get_db(); c = conn.cursor()
+    try:
+        c.execute(_q("INSERT INTO follows (follower_id,following_id) VALUES (?,?)"), (follower_id, following_id))
+        conn.commit(); conn.close(); return True
+    except Exception:
+        if _PG: conn.rollback()
+        conn.close(); return False
+
+def unfollow_user(follower_id, following_id):
+    conn = get_db(); c = conn.cursor()
+    c.execute(_q("DELETE FROM follows WHERE follower_id=? AND following_id=?"), (follower_id, following_id))
+    conn.commit(); conn.close(); return True
+
+def is_following(follower_id, following_id):
+    conn = get_db(); c = conn.cursor()
+    c.execute(_q("SELECT 1 FROM follows WHERE follower_id=? AND following_id=?"), (follower_id, following_id))
+    row = c.fetchone(); conn.close(); return row is not None
 
 # ── Signals ───────────────────────────────────────────────────────────────────
 
