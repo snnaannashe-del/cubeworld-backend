@@ -667,6 +667,11 @@ async def react_to_message(msg_id: int, body: ReactRequest, user=Depends(get_cur
     result = db.toggle_reaction(msg_id, user["id"], display_name, emoji)
     return {**result, "message_id": msg_id, "ok": True}
 
+@app.get("/dm/inbox")
+async def get_dm_inbox(user=Depends(get_current_user)):
+    """Return all DM conversations for the current user (inbox)."""
+    return db.get_dm_inbox(user["id"])
+
 @app.get("/dm/{other_user_id}")
 async def get_dm_history(other_user_id: int, user=Depends(get_current_user)):
     history = db.get_dm_history(user["id"], other_user_id)
