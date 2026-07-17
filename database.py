@@ -1171,6 +1171,66 @@ def get_dm_history(user1_id, user2_id, limit=50):
     rows = c.fetchall()
     conn.close(); return list(reversed(_fetchall(rows)))
 
+def get_dm_inbox(user_id):
+    """Return list of DM conversations: {peer_id, display_name, last_content, last_time, unread}"""
+    conn = get_db(); c = conn.cursor()
+    if _PG:
+        c.execute("""
+            SELECT peer_id, display_name, last_content, last_time,
+                   (SELECT COUNT(*) FROM direct_messages
+                    WHERE from_user_id=peer_id AND to_user_id=%s AND read_at IS NULL) AS unread
+            FROM (
+                SELECT CASE WHEN from_user_id=%s THEN to_user_id ELSE from_user_id END AS peer_id,
+                       CASE WHEN from_user_id=%s THEN (SELECT display_name FROM users WHERE id=to_user_id)
+                            ELSE (SELECT display_name FROM users WHERE id=from_user_id) END AS display_name,
+                       content AS last_content, created_at AS last_time,
+                       ROW_NUMBER() OVER (PARTITION BY
+                           CASE WHEN from_user_id=%s THEN to_user_id ELSE from_user_id END
+                           ORDER BY created_at DESC) AS rn
+                FROM direct_messages
+                WHERE (from_user_id=%s OR to_user_id=%s)
+                  AND (expires_at IS NULL OR expires_at>NOW())
+            ) sub WHERE rn=1
+            ORDER BY last_time DESC LIMIT 50
+        """, (user_id, user_id, user_id, user_id, user_id, user_id))
+    else:
+        c.execute("""
+            SELECT peer_id, display_name, last_content, last_time,
+                   (SELECT COUNT(*) FROM direct_messages
+                    WHERE from_user_id=peer_id AND to_user_id=? AND read_at IS NULL) AS unread
+            FROM (
+                SELECT CASE WHEN from_user_id=? THEN to_user_id ELSE from_user_id END AS peer_id,
+                       CASE WHEN from_user_id=? THEN (SELECT display_name FROM users WHERE id=to_user_id)
+                            ELSE (SELECT display_name FROM users WHERE id=from_user_id) END AS display_name,
+                       content AS last_content, created_at AS last_time,
+                       ROW_NUMBER() OVER (PARTITION BY
+                           CASE WHEN from_user_id=? THEN to_user_id ELSE from_user_id END
+                           ORDER BY created_at DESC) AS rn
+                FROM direct_messages
+                WHERE (from_user_id=? OR to_user_id=?)
+                  AND (expires_at IS NULL OR expires_at>datetime('now'))
+            ) sub WHERE rn=1
+            ORDER BY last_time DESC LIMIT 50
+        """, (user_id, user_id, user_id, user_id, user_id, user_id))
+    rows = c.fetchall(); conn.close()
+    result = []
+    for r in _fetchall(rows):
+        t = r.get('last_time','')
+        try:
+            from datetime import datetime, timezone
+            dt = datetime.fromisoformat(str(t).replace('Z','+00:00')) if t else None
+            time_str = dt.strftime('%H:%M') if dt else ''
+        except Exception:
+            time_str = str(t)[:5] if t else ''
+        result.append({
+            'peer_id': r['peer_id'],
+            'display_name': r.get('display_name') or f'User#{r["peer_id"]}',
+            'last_msg': (r.get('last_content') or '')[:40],
+            'time': time_str,
+            'unread': r.get('unread') or 0
+        })
+    return result
+
 def mark_dm_read(from_user_id, to_user_id):
     conn = get_db(); c = conn.cursor()
     if _PG:
