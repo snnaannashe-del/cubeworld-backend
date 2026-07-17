@@ -1221,21 +1221,47 @@ def create_video_post(cube_id, user_id, display_name, video_url, description, mu
     pid = _execute_returning(conn, sql, (cube_id, user_id, display_name, description or '', video_url or '', description or '', music or ''))
     conn.commit(); conn.close(); return pid
 
+def _ensure_post_columns(conn):
+    """Add new columns to posts table if missing (safe to call multiple times)."""
+    c = conn.cursor()
+    for col_sql in [
+        "ALTER TABLE posts ADD COLUMN post_type TEXT DEFAULT 'short'",
+        "ALTER TABLE posts ADD COLUMN image_url TEXT DEFAULT ''",
+        "ALTER TABLE posts ADD COLUMN title TEXT DEFAULT ''",
+        "ALTER TABLE posts ADD COLUMN tags TEXT DEFAULT '[]'",
+    ]:
+        try: c.execute(col_sql)
+        except Exception: pass
+    conn.commit()
+
 def get_global_feed(limit=30, offset=0):
-    conn = get_db(); c = conn.cursor()
-    sql = _q("SELECT id,cube_id,user_id,display_name,content,video_url,description,music,likes,views,comment_count,created_at FROM posts ORDER BY created_at DESC LIMIT ? OFFSET ?")
+    import json as _json
+    conn = get_db(); _ensure_post_columns(conn); c = conn.cursor()
+    sql = _q("SELECT * FROM posts ORDER BY created_at DESC LIMIT ? OFFSET ?")
     c.execute(sql, (limit, offset))
-    rows = c.fetchall(); conn.close(); return _fetchall(rows)
+    rows = _fetchall(c.fetchall()); conn.close()
+    for r in rows:
+        try: r['tags'] = _json.loads(r.get('tags') or '[]')
+        except Exception: r['tags'] = []
+        r.setdefault('image_url', ''); r.setdefault('post_type', 'short')
+        r.setdefault('title', ''); r['view_count'] = r.get('views', 0)
+    return rows
 
 def get_following_feed(user_id, limit=30):
-    conn = get_db(); c = conn.cursor()
-    sql = _q("""SELECT p.id,p.cube_id,p.user_id,p.display_name,p.content,p.video_url,p.description,p.music,p.likes,p.views,p.comment_count,p.created_at
-                FROM posts p
+    import json as _json
+    conn = get_db(); _ensure_post_columns(conn); c = conn.cursor()
+    sql = _q("""SELECT p.* FROM posts p
                 JOIN follows f ON f.following_id=p.user_id
                 WHERE f.follower_id=?
                 ORDER BY p.created_at DESC LIMIT ?""")
     c.execute(sql, (user_id, limit))
-    rows = c.fetchall(); conn.close(); return _fetchall(rows)
+    rows = _fetchall(c.fetchall()); conn.close()
+    for r in rows:
+        try: r['tags'] = _json.loads(r.get('tags') or '[]')
+        except Exception: r['tags'] = []
+        r.setdefault('image_url', ''); r.setdefault('post_type', 'short')
+        r.setdefault('title', ''); r['view_count'] = r.get('views', 0)
+    return rows
 
 def like_feed_post(post_id, user_id):
     return like_post(post_id, user_id)  # reuse existing
