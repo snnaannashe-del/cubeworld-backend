@@ -75,6 +75,7 @@ class RefreshRequest(BaseModel):
 class UpdateProfileRequest(BaseModel):
     display_name: Optional[str] = None
     avatar_url: Optional[str] = None
+    account_type: Optional[str] = None  # 'public' | 'hidden'
 
 class WalletLinkRequest(BaseModel):
     address: str
@@ -212,6 +213,8 @@ async def get_me(user=Depends(get_current_user)):
 @app.patch("/me")
 async def update_me(body: UpdateProfileRequest, user=Depends(get_current_user)):
     db.update_profile(user["id"], body.display_name, body.avatar_url)
+    if body.account_type in ('public', 'hidden'):
+        db.set_account_type(user["id"], body.account_type)
     return {"ok": True}
 
 @app.post("/me/username")
@@ -808,20 +811,39 @@ connected_users: dict = {}
 
 @app.websocket("/ws/{token}")
 async def websocket_legacy(websocket: WebSocket, token: str):
+    """Global user WebSocket — for DM delivery when user is not in any cube."""
     await websocket.accept()
     user_id = None
     try:
         payload = decode_access_token(token)
         user_id = payload["sub"]
         connected_users[user_id] = websocket
+        user_ws[user_id] = websocket  # register for DM delivery
         await websocket.send_json({"type": "connected", "user_id": user_id})
         while True:
             data = await websocket.receive_json()
             if data.get("type") == "ping":
                 await websocket.send_json({"type": "pong"})
+            elif data.get("type") == "dm":
+                # Handle DM sending from global WS (same logic as cube WS)
+                to_uid = str(data.get("to_user_id", ""))
+                dm_content = (data.get("content") or "").strip()
+                dm_type = data.get("msg_type", "text")
+                if dm_content and to_uid:
+                    display_name = db.get_display_name(int(user_id))
+                    dm_id = db.save_dm(int(user_id), int(to_uid), dm_content, msg_type=dm_type)
+                    dm_out = {
+                        "type": "dm", "id": dm_id,
+                        "from_user_id": user_id, "to_user_id": to_uid,
+                        "display_name": display_name, "content": dm_content,
+                        "msg_type": dm_type, "created_at": datetime.utcnow().isoformat()
+                    }
+                    await _notify_user(int(to_uid), dm_out)
+                    await websocket.send_json(dm_out)
     except WebSocketDisconnect:
         pass
     except HTTPException:
         await websocket.close(code=4001)
     finally:
         connected_users.pop(user_id, None)
+        user_ws.pop(user_id, None)
