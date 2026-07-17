@@ -541,6 +541,32 @@ async def send_group_message(group_id: int, body: GroupMessageRequest, user=Depe
             pass
     return msg
 
+@app.delete("/groups/{group_id}/messages/{msg_id}")
+async def delete_group_message(group_id: int, msg_id: int, user=Depends(get_current_user)):
+    """Delete a group message (own message, or admin)."""
+    info = db.get_group_info(group_id, user["id"])
+    if not info or not info.get("is_member"):
+        raise HTTPException(403, "Not a member")
+    conn = db.get_db(); c = conn.cursor()
+    # Check ownership
+    if db._PG:
+        c.execute("SELECT user_id FROM group_messages WHERE id=%s AND group_id=%s", (msg_id, group_id))
+    else:
+        c.execute("SELECT user_id FROM group_messages WHERE id=? AND group_id=?", (msg_id, group_id))
+    row = c.fetchone()
+    if not row:
+        conn.close(); raise HTTPException(404, "Message not found")
+    msg_owner = row[0] if isinstance(row, (list, tuple)) else row.get("user_id")
+    is_admin = (info.get("role") in ("admin", "owner"))
+    if str(msg_owner) != str(user["id"]) and not is_admin:
+        conn.close(); raise HTTPException(403, "Cannot delete other's message")
+    if db._PG:
+        c.execute("DELETE FROM group_messages WHERE id=%s", (msg_id,))
+    else:
+        c.execute("DELETE FROM group_messages WHERE id=?", (msg_id,))
+    conn.commit(); conn.close()
+    return {"deleted": True}
+
 @app.get("/groups/{group_id}/info")
 async def get_group_info(group_id: int, creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme)):
     uid = None
