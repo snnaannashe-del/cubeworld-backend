@@ -95,7 +95,8 @@ def init_db():
             referrer_id INTEGER,
             created_at TIMESTAMP NOT NULL DEFAULT NOW(),
             last_seen TIMESTAMP NOT NULL DEFAULT NOW(),
-            is_active INTEGER NOT NULL DEFAULT 1
+            is_active INTEGER NOT NULL DEFAULT 1,
+            account_type TEXT NOT NULL DEFAULT 'public'
         )""")
         c.execute("""CREATE TABLE IF NOT EXISTS sessions (
             id SERIAL PRIMARY KEY,
@@ -151,6 +152,7 @@ def init_db():
             ('cubes', 'cube_key', 'TEXT'),
             ('users', 'username', 'TEXT UNIQUE'),
             ('cubes', 'handle', 'TEXT UNIQUE'),
+            ('users', 'account_type', "TEXT NOT NULL DEFAULT 'public'"),
         ]:
             c.execute("""SELECT column_name FROM information_schema.columns
                          WHERE table_name=%s AND column_name=%s""", (tbl, col))
@@ -299,7 +301,8 @@ def init_db():
             referrer_id INTEGER,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             last_seen TEXT NOT NULL DEFAULT (datetime('now')),
-            is_active INTEGER NOT NULL DEFAULT 1
+            is_active INTEGER NOT NULL DEFAULT 1,
+            account_type TEXT NOT NULL DEFAULT 'public'
         )""")
         c.execute("""CREATE TABLE IF NOT EXISTS sessions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -358,6 +361,7 @@ def init_db():
         _sqlite_add_col('cubes', 'cube_key', 'TEXT UNIQUE')
         _sqlite_add_col('users', 'username', 'TEXT UNIQUE')
         _sqlite_add_col('cubes', 'handle', 'TEXT UNIQUE')
+        _sqlite_add_col('users', 'account_type', "TEXT NOT NULL DEFAULT 'public'")
         conn.commit()
         c.execute("""CREATE TABLE IF NOT EXISTS groups (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -797,6 +801,16 @@ def set_group_handle(group_id: int, owner_id: int, handle: str):
     try:
         c.execute(_q("UPDATE groups SET handle=? WHERE id=? AND owner_id=?"),
                   (handle.lower(), group_id, owner_id))
+        conn.commit(); conn.close(); return True
+    except Exception:
+        if _PG: conn.rollback()
+        conn.close(); return False
+
+def set_account_type(user_id: int, account_type: str):
+    """Set account_type: 'public' or 'hidden'."""
+    conn = get_db(); c = conn.cursor()
+    try:
+        c.execute(_q("UPDATE users SET account_type=? WHERE id=?"), (account_type, user_id))
         conn.commit(); conn.close(); return True
     except Exception:
         if _PG: conn.rollback()
