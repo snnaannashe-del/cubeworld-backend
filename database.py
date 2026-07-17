@@ -158,6 +158,18 @@ def init_db():
                          WHERE table_name=%s AND column_name=%s""", (tbl, col))
             if not c.fetchone():
                 c.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {defn}")
+        # Add group_key + post_type columns
+        for tbl, col, defn in [
+            ('groups', 'group_key', 'TEXT UNIQUE'),
+            ('posts', 'post_type', "TEXT NOT NULL DEFAULT 'short'"),
+            ('posts', 'image_url', 'TEXT'),
+            ('posts', 'view_count', 'INTEGER NOT NULL DEFAULT 0'),
+        ]:
+            c.execute("""SELECT column_name FROM information_schema.columns
+                         WHERE table_name=%s AND column_name=%s""", (tbl, col))
+            if not c.fetchone():
+                try: c.execute(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS {col} {defn}")
+                except Exception: pass
         conn.commit()
         c.execute("""CREATE TABLE IF NOT EXISTS groups (
             id SERIAL PRIMARY KEY,
@@ -167,7 +179,17 @@ def init_db():
             icon TEXT DEFAULT '👥',
             type TEXT NOT NULL DEFAULT 'public',
             handle TEXT UNIQUE,
+            group_key TEXT UNIQUE,
             member_count INTEGER NOT NULL DEFAULT 1,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS group_messages (
+            id SERIAL PRIMARY KEY,
+            group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+            user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            display_name TEXT,
+            content TEXT NOT NULL,
+            msg_type TEXT NOT NULL DEFAULT 'text',
             created_at TIMESTAMP NOT NULL DEFAULT NOW()
         )""")
         c.execute("""CREATE TABLE IF NOT EXISTS group_members (
@@ -381,6 +403,10 @@ def init_db():
         _sqlite_add_col('users', 'username', 'TEXT UNIQUE')
         _sqlite_add_col('cubes', 'handle', 'TEXT UNIQUE')
         _sqlite_add_col('users', 'account_type', "TEXT NOT NULL DEFAULT 'public'")
+        _sqlite_add_col('groups', 'group_key', 'TEXT UNIQUE')
+        _sqlite_add_col('posts', 'post_type', "TEXT NOT NULL DEFAULT 'short'")
+        _sqlite_add_col('posts', 'image_url', 'TEXT')
+        _sqlite_add_col('posts', 'view_count', 'INTEGER NOT NULL DEFAULT 0')
         conn.commit()
         c.execute("""CREATE TABLE IF NOT EXISTS groups (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -390,7 +416,17 @@ def init_db():
             icon TEXT DEFAULT '👥',
             type TEXT NOT NULL DEFAULT 'public',
             handle TEXT UNIQUE,
+            group_key TEXT UNIQUE,
             member_count INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS group_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+            user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            display_name TEXT,
+            content TEXT NOT NULL,
+            msg_type TEXT NOT NULL DEFAULT 'text',
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         )""")
         c.execute("""CREATE TABLE IF NOT EXISTS group_members (
@@ -1438,3 +1474,98 @@ def claim_reward(user_id, month, wallet_address):
         if _PG: conn.rollback()
         conn.close()
         return None, "Награда уже запрошена за этот месяц"
+
+# ══════════════════════════════════════════
+# GROUP MESSAGES
+# ══════════════════════════════════════════
+
+def get_group_messages(group_id: int, limit: int = 80):
+    conn = get_db(); c = conn.cursor()
+    if _PG:
+        c.execute("""SELECT id,group_id,user_id,display_name,content,msg_type,created_at
+                     FROM group_messages WHERE group_id=%s ORDER BY id DESC LIMIT %s""", (group_id, limit))
+    else:
+        c.execute("""SELECT id,group_id,user_id,display_name,content,msg_type,created_at
+                     FROM group_messages WHERE group_id=? ORDER BY id DESC LIMIT ?""", (group_id, limit))
+    rows = list(reversed(_fetchall(c.fetchall()))); conn.close()
+    return rows
+
+def add_group_message(group_id: int, user_id: int, display_name: str, content: str, msg_type: str = 'text'):
+    conn = get_db(); c = conn.cursor()
+    try:
+        mid = _execute_returning(
+            conn,
+            _q("INSERT INTO group_messages (group_id,user_id,display_name,content,msg_type) VALUES (?,?,?,?,?)"),
+            (group_id, user_id, display_name, content, msg_type)
+        )
+        conn.commit(); conn.close(); return mid
+    except Exception:
+        if _PG: conn.rollback()
+        conn.close(); return None
+
+def join_group_by_key(group_key: str, user_id: int):
+    """Join a private group by its key. Returns group dict or None."""
+    conn = get_db(); c = conn.cursor()
+    try:
+        c.execute(_q("SELECT id,name,icon,type FROM groups WHERE group_key=?"), (group_key,))
+        g = c.fetchone()
+        if not g: conn.close(); return None
+        gd = dict(g)
+        gid = gd['id']
+        if _PG:
+            c.execute("INSERT INTO group_members (group_id,user_id) VALUES (%s,%s) ON CONFLICT DO NOTHING", (gid, user_id))
+            c.execute("UPDATE groups SET member_count=(SELECT COUNT(*) FROM group_members WHERE group_id=%s) WHERE id=%s", (gid, gid))
+        else:
+            c.execute("INSERT OR IGNORE INTO group_members (group_id,user_id) VALUES (?,?)", (gid, user_id))
+            c.execute("UPDATE groups SET member_count=(SELECT COUNT(*) FROM group_members WHERE group_id=?) WHERE id=?", (gid, gid))
+        conn.commit(); conn.close(); return gd
+    except Exception:
+        if _PG: conn.rollback()
+        conn.close(); return None
+
+def set_group_key(group_id: int, owner_id: int, key: str):
+    """Owner sets a key for private group access."""
+    conn = get_db(); c = conn.cursor()
+    try:
+        c.execute(_q("UPDATE groups SET group_key=? WHERE id=? AND owner_id=?"), (key, group_id, owner_id))
+        conn.commit(); conn.close(); return True
+    except Exception:
+        if _PG: conn.rollback()
+        conn.close(); return False
+
+def increment_post_views(post_id: int):
+    conn = get_db(); c = conn.cursor()
+    try:
+        c.execute(_q("UPDATE posts SET view_count=COALESCE(view_count,0)+1 WHERE id=?"), (post_id,))
+        conn.commit(); conn.close()
+    except Exception:
+        if _PG: conn.rollback()
+        conn.close()
+
+def get_group_info(group_id: int, user_id: int = None):
+    conn = get_db(); c = conn.cursor()
+    if _PG:
+        c.execute("""SELECT g.id,g.owner_id,g.name,g.description,g.icon,g.type,g.handle,g.member_count,g.created_at,
+                            COALESCE(gm.user_id IS NOT NULL, false) as is_member
+                     FROM groups g LEFT JOIN group_members gm ON gm.group_id=g.id AND gm.user_id=%s
+                     WHERE g.id=%s""", (user_id, group_id))
+    else:
+        c.execute("""SELECT g.id,g.owner_id,g.name,g.description,g.icon,g.type,g.handle,g.member_count,g.created_at,
+                            CASE WHEN gm.user_id IS NOT NULL THEN 1 ELSE 0 END as is_member
+                     FROM groups g LEFT JOIN group_members gm ON gm.group_id=g.id AND gm.user_id=?
+                     WHERE g.id=?""", (user_id or 0, group_id))
+    row = c.fetchone(); conn.close()
+    return dict(row) if row else None
+
+def get_group_members(group_id: int, limit: int = 50):
+    conn = get_db(); c = conn.cursor()
+    if _PG:
+        c.execute("""SELECT u.id,u.display_name,gm.joined_at
+                     FROM group_members gm JOIN users u ON u.id=gm.user_id
+                     WHERE gm.group_id=%s ORDER BY gm.joined_at DESC LIMIT %s""", (group_id, limit))
+    else:
+        c.execute("""SELECT u.id,u.display_name,gm.joined_at
+                     FROM group_members gm JOIN users u ON u.id=gm.user_id
+                     WHERE gm.group_id=? ORDER BY gm.joined_at DESC LIMIT ?""", (group_id, limit))
+    rows = _fetchall(c.fetchall()); conn.close()
+    return rows
