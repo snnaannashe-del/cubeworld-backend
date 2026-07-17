@@ -125,6 +125,18 @@ class CreateVideoPostRequest(BaseModel):
     video_url: Optional[str] = ""
     description: str
     music: Optional[str] = ""
+    post_type: Optional[str] = "short"   # "short" | "ball"
+    image_url: Optional[str] = ""
+
+class GroupMessageRequest(BaseModel):
+    content: str
+    msg_type: Optional[str] = "text"
+
+class JoinGroupByKeyRequest(BaseModel):
+    key: str
+
+class SetGroupKeyRequest(BaseModel):
+    key: str
 
 class AddCommentRequest(BaseModel):
     content: str
@@ -471,6 +483,82 @@ async def set_group_handle(group_id: int, body: SetGroupHandleRequest, user=Depe
         raise HTTPException(400, "Handle taken or not your group")
     return {"handle": handle}
 
+@app.get("/groups/{group_id}/messages")
+async def get_group_messages(group_id: int, user=Depends(get_current_user)):
+    info = db.get_group_info(group_id, user["id"])
+    if not info:
+        raise HTTPException(404, "Group not found")
+    if not info.get("is_member"):
+        raise HTTPException(403, "Not a member")
+    msgs = db.get_group_messages(group_id, limit=80)
+    return msgs
+
+@app.post("/groups/{group_id}/messages")
+async def send_group_message(group_id: int, body: GroupMessageRequest, user=Depends(get_current_user)):
+    info = db.get_group_info(group_id, user["id"])
+    if not info:
+        raise HTTPException(404, "Group not found")
+    if not info.get("is_member"):
+        raise HTTPException(403, "Not a member")
+    content = body.content.strip()[:2000]
+    if not content:
+        raise HTTPException(400, "Empty message")
+    display_name = db.get_display_name(user["id"])
+    mid = db.add_group_message(group_id, user["id"], display_name, content, body.msg_type or "text")
+    msg = {"id": mid, "group_id": group_id, "user_id": user["id"],
+           "display_name": display_name, "content": content,
+           "msg_type": body.msg_type or "text",
+           "created_at": datetime.utcnow().isoformat()}
+    # Broadcast to group members in group_ws rooms
+    for ws in list(_group_ws.get(str(group_id), {}).values()):
+        try:
+            await ws.send_json({"type": "group_msg", "group_id": group_id, **msg})
+        except Exception:
+            pass
+    return msg
+
+@app.get("/groups/{group_id}/info")
+async def get_group_info(group_id: int, creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme)):
+    uid = None
+    if creds:
+        try:
+            payload = decode_access_token(creds.credentials)
+            uid = int(payload["sub"])
+        except Exception:
+            pass
+    info = db.get_group_info(group_id, uid)
+    if not info:
+        raise HTTPException(404, "Group not found")
+    return info
+
+@app.get("/groups/{group_id}/members")
+async def get_group_members(group_id: int, user=Depends(get_current_user)):
+    info = db.get_group_info(group_id, user["id"])
+    if not info:
+        raise HTTPException(404, "Group not found")
+    if not info.get("is_member"):
+        raise HTTPException(403, "Not a member")
+    return db.get_group_members(group_id)
+
+@app.post("/groups/join-key")
+async def join_group_by_key(body: JoinGroupByKeyRequest, user=Depends(get_current_user)):
+    g = db.join_group_by_key(body.key.strip(), user["id"])
+    if not g:
+        raise HTTPException(404, "Ключ не найден или группа недоступна")
+    return {"joined": True, "group": g}
+
+@app.post("/groups/{group_id}/set-key")
+async def set_group_key(group_id: int, body: SetGroupKeyRequest, user=Depends(get_current_user)):
+    ok = db.set_group_key(group_id, user["id"], body.key.strip())
+    if not ok:
+        raise HTTPException(403, "Только владелец может установить ключ")
+    return {"ok": True}
+
+@app.post("/feed/{post_id}/view")
+async def record_post_view(post_id: int):
+    db.increment_post_views(post_id)
+    return {"ok": True}
+
 # ── Cubes CRUD ────────────────────────────────────────────────────────────────
 
 @app.get("/cubes")
@@ -558,10 +646,22 @@ async def create_feed_post(body: CreateVideoPostRequest, user=Depends(get_curren
     video_url = (body.video_url or '').strip()[:500]
     music = (body.music or '').strip()[:200]
     display_name = db.get_display_name(user["id"])
+    post_type = (body.post_type or 'short').lower()
+    image_url = (body.image_url or '').strip()[:500]
     pid = db.create_video_post(body.cube_id or 1, user["id"], display_name, video_url, desc, music)
+    # Store extra fields if columns exist
+    try:
+        import database as _db2
+        conn = _db2.get_db(); cc = conn.cursor()
+        cc.execute(_db2._q("UPDATE posts SET post_type=?,image_url=? WHERE id=?"), (post_type, image_url, pid))
+        conn.commit(); conn.close()
+    except Exception:
+        pass
     return {"id": pid, "user_id": user["id"], "display_name": display_name,
-            "video_url": video_url, "description": desc, "music": music,
-            "likes": 0, "comment_count": 0, "created_at": datetime.utcnow().isoformat(), "ok": True}
+            "video_url": video_url, "image_url": image_url, "description": desc,
+            "music": music, "post_type": post_type,
+            "likes": 0, "comment_count": 0, "view_count": 0,
+            "created_at": datetime.utcnow().isoformat(), "ok": True}
 
 @app.post("/feed/{post_id}/like")
 async def like_feed_post(post_id: int, user=Depends(get_current_user)):
@@ -657,6 +757,7 @@ async def health():
 
 cube_rooms: Dict[str, Dict[str, dict]] = {}
 user_ws: Dict[str, object] = {}
+_group_ws: Dict[str, Dict[str, object]] = {}  # group_id_str -> {user_id_str: websocket}
 
 async def _notify_user(user_id: int, msg: dict):
     """Send a direct message to a user's current WebSocket, if connected."""
