@@ -6,10 +6,13 @@ import jwt
 from datetime import datetime, timedelta
 from typing import Optional, Dict
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, Request, BackgroundTasks
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, Request, BackgroundTasks, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+import shutil
+import uuid
 
 import database as db
 
@@ -25,6 +28,11 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
 
 db.init_db()
 bearer_scheme = HTTPBearer(auto_error=False)
+
+# Serve uploaded files statically
+UPLOAD_DIR = "/tmp/cw_uploads"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 _CHARS = string.ascii_uppercase + string.digits
 
@@ -558,6 +566,26 @@ async def set_group_key(group_id: int, body: SetGroupKeyRequest, user=Depends(ge
 async def record_post_view(post_id: int):
     db.increment_post_views(post_id)
     return {"ok": True}
+
+@app.post("/upload")
+async def upload_file(file: UploadFile = File(...),
+                      creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme)):
+    """Upload image/video/document. Returns public URL."""
+    MAX_SIZE = 50 * 1024 * 1024  # 50 MB
+    content = await file.read()
+    if len(content) > MAX_SIZE:
+        raise HTTPException(413, "File too large (max 50 MB)")
+    ext = os.path.splitext(file.filename or "file")[1].lower() or ".bin"
+    allowed = {".jpg",".jpeg",".png",".gif",".webp",".mp4",".webm",".mov",".pdf",".zip",".txt",".doc",".docx"}
+    if ext not in allowed:
+        ext = ".bin"
+    fname = f"{uuid.uuid4().hex}{ext}"
+    fpath = os.path.join(UPLOAD_DIR, fname)
+    with open(fpath, "wb") as f:
+        f.write(content)
+    base_url = os.getenv("API_BASE_URL", "")
+    url = f"{base_url}/uploads/{fname}"
+    return {"url": url, "filename": file.filename, "size": len(content), "ok": True}
 
 # ── Cubes CRUD ────────────────────────────────────────────────────────────────
 
