@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import shutil
 import uuid
+import httpx
 
 import database as db
 
@@ -612,22 +613,50 @@ async def record_post_view(post_id: int):
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...),
                       creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme)):
-    """Upload image/video/document. Returns public URL."""
-    MAX_SIZE = 50 * 1024 * 1024  # 50 MB
+    """Upload image/video/document. Returns public URL.
+    Uses Cloudinary if CLOUDINARY_CLOUD_NAME + CLOUDINARY_UPLOAD_PRESET env vars are set,
+    otherwise falls back to local temp storage.
+    """
+    MAX_SIZE = 100 * 1024 * 1024  # 100 MB
     content = await file.read()
     if len(content) > MAX_SIZE:
-        raise HTTPException(413, "File too large (max 50 MB)")
+        raise HTTPException(413, "File too large (max 100 MB)")
+
+    cld_cloud  = os.getenv("CLOUDINARY_CLOUD_NAME", "")
+    cld_preset = os.getenv("CLOUDINARY_UPLOAD_PRESET", "")
+
+    # ── Cloudinary upload (permanent) ──────────────────────────────────
+    if cld_cloud and cld_preset:
+        try:
+            import io
+            async with httpx.AsyncClient(timeout=60) as client:
+                resp = await client.post(
+                    f"https://api.cloudinary.com/v1_1/{cld_cloud}/auto/upload",
+                    files={"file": (file.filename or "upload", content, file.content_type or "application/octet-stream")},
+                    data={"upload_preset": cld_preset}
+                )
+            j = resp.json()
+            if "secure_url" in j:
+                return {"url": j["secure_url"], "filename": file.filename,
+                        "size": len(content), "ok": True, "storage": "cloudinary"}
+        except Exception as e:
+            # fall through to local storage if Cloudinary fails
+            pass
+
+    # ── Local temp storage (fallback) ──────────────────────────────────
     ext = os.path.splitext(file.filename or "file")[1].lower() or ".bin"
-    allowed = {".jpg",".jpeg",".png",".gif",".webp",".mp4",".webm",".mov",".pdf",".zip",".txt",".doc",".docx"}
+    allowed = {".jpg",".jpeg",".png",".gif",".webp",".mp4",".webm",".mov",
+               ".pdf",".zip",".txt",".doc",".docx",".csv",".xls",".xlsx"}
     if ext not in allowed:
         ext = ".bin"
     fname = f"{uuid.uuid4().hex}{ext}"
     fpath = os.path.join(UPLOAD_DIR, fname)
     with open(fpath, "wb") as f:
         f.write(content)
-    base_url = os.getenv("API_BASE_URL", "")
+    base_url = os.getenv("API_BASE_URL", "https://cubeworld-backend.onrender.com")
     url = f"{base_url}/uploads/{fname}"
-    return {"url": url, "filename": file.filename, "size": len(content), "ok": True}
+    return {"url": url, "filename": file.filename, "size": len(content),
+            "ok": True, "storage": "local_temp"}
 
 # ── Cubes CRUD ────────────────────────────────────────────────────────────────
 
