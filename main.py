@@ -557,7 +557,7 @@ async def delete_group_message(group_id: int, msg_id: int, user=Depends(get_curr
     if not row:
         conn.close(); raise HTTPException(404, "Message not found")
     msg_owner = row[0] if isinstance(row, (list, tuple)) else row.get("user_id")
-    is_admin = (info.get("role") in ("admin", "owner"))
+    is_admin = (str(info.get("owner_id", "")) == str(user["id"]))
     if str(msg_owner) != str(user["id"]) and not is_admin:
         conn.close(); raise HTTPException(403, "Cannot delete other's message")
     if db._PG:
