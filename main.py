@@ -165,6 +165,13 @@ class CreateSignalRequest(BaseModel):
 class ReactRequest(BaseModel):
     emoji: str
 
+class SendDmRequest(BaseModel):
+    content: str = ""
+    msg_type: str = "text"
+    file_name: Optional[str] = None
+    file_size: Optional[str] = None
+    file_url: Optional[str] = None
+
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
 @app.post("/auth/generate")
@@ -753,6 +760,27 @@ async def react_to_message(msg_id: int, body: ReactRequest, user=Depends(get_cur
 async def get_dm_inbox(user=Depends(get_current_user)):
     """Return all DM conversations for the current user (inbox)."""
     return db.get_dm_inbox(user["id"])
+
+@app.post("/dm/{other_user_id}")
+async def send_dm_http(other_user_id: int, body: SendDmRequest, user=Depends(get_current_user)):
+    """HTTP fallback for sending DMs (WS is preferred, this ensures delivery even if WS fails)."""
+    content = (body.content or "").strip()[:4000]
+    if not content:
+        raise HTTPException(400, "content required")
+    display_name = db.get_display_name(user["id"])
+    dm_id = db.save_dm(user["id"], other_user_id, content, msg_type=body.msg_type,
+                        file_name=body.file_name, file_size=body.file_size)
+    dm_out = {
+        "type": "dm", "id": dm_id,
+        "from_user_id": user["id"], "to_user_id": other_user_id,
+        "display_name": display_name, "content": content,
+        "msg_type": body.msg_type, "file_name": body.file_name, "file_size": body.file_size,
+        "file_url": body.file_url or (content if body.msg_type in ("image","video","file") else None),
+        "created_at": datetime.utcnow().isoformat(), "ok": True
+    }
+    # Real-time delivery to recipient via WS if connected
+    await _notify_user(other_user_id, dm_out)
+    return dm_out
 
 @app.get("/dm/{other_user_id}")
 async def get_dm_history(other_user_id: int, user=Depends(get_current_user)):
