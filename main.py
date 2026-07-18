@@ -542,6 +542,33 @@ async def send_group_message(group_id: int, body: GroupMessageRequest, user=Depe
             pass
     return msg
 
+@app.put("/groups/{group_id}/messages/{msg_id}")
+async def edit_group_message(group_id: int, msg_id: int, body: dict, user=Depends(get_current_user)):
+    """Edit own group message."""
+    info = db.get_group_info(group_id, user["id"])
+    if not info or not info.get("is_member"):
+        raise HTTPException(403, "Not a member")
+    new_content = (body.get("content") or "").strip()
+    if not new_content:
+        raise HTTPException(400, "Content required")
+    conn = db.get_db(); c = conn.cursor()
+    if db._PG:
+        c.execute("SELECT user_id FROM group_messages WHERE id=%s AND group_id=%s", (msg_id, group_id))
+    else:
+        c.execute("SELECT user_id FROM group_messages WHERE id=? AND group_id=?", (msg_id, group_id))
+    row = c.fetchone()
+    if not row:
+        conn.close(); raise HTTPException(404, "Message not found")
+    msg_owner = row[0] if isinstance(row, (list, tuple)) else row.get("user_id")
+    if str(msg_owner) != str(user["id"]):
+        conn.close(); raise HTTPException(403, "Cannot edit other's message")
+    if db._PG:
+        c.execute("UPDATE group_messages SET content=%s WHERE id=%s", (new_content, msg_id))
+    else:
+        c.execute("UPDATE group_messages SET content=? WHERE id=?", (new_content, msg_id))
+    conn.commit(); conn.close()
+    return {"ok": True, "id": msg_id, "content": new_content}
+
 @app.delete("/groups/{group_id}/messages/{msg_id}")
 async def delete_group_message(group_id: int, msg_id: int, user=Depends(get_current_user)):
     """Delete a group message (own message, or admin)."""
