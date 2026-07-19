@@ -1261,13 +1261,21 @@ def get_posts(cube_id, limit=50):
 
 def like_post(post_id, user_id):
     conn = get_db(); c = conn.cursor()
-    try:
-        c.execute(_q("INSERT INTO post_likes (post_id,user_id) VALUES (?,?)"), (post_id, user_id))
-        c.execute(_q("UPDATE posts SET likes=likes+1 WHERE id=?"), (post_id,))
-        conn.commit(); liked = True
-    except Exception:
-        conn.rollback() if _PG else None
+    c.execute(_q("SELECT 1 FROM post_likes WHERE post_id=? AND user_id=?"), (post_id, user_id))
+    exists = c.fetchone()
+    if exists:
+        c.execute(_q("DELETE FROM post_likes WHERE post_id=? AND user_id=?"), (post_id, user_id))
+        c.execute(_q("UPDATE posts SET likes=MAX(0,likes-1) WHERE id=?"), (post_id,))
         liked = False
+    else:
+        try:
+            c.execute(_q("INSERT INTO post_likes (post_id,user_id) VALUES (?,?)"), (post_id, user_id))
+            c.execute(_q("UPDATE posts SET likes=likes+1 WHERE id=?"), (post_id,))
+            liked = True
+        except Exception:
+            if _PG: conn.rollback()
+            liked = False
+    conn.commit()
     c.execute(_q("SELECT likes FROM posts WHERE id=?"), (post_id,))
     row = c.fetchone()
     conn.close(); return (dict(row)["likes"] if row else 0, liked)
@@ -1360,6 +1368,75 @@ def is_following(follower_id, following_id):
     conn = get_db(); c = conn.cursor()
     c.execute(_q("SELECT 1 FROM follows WHERE follower_id=? AND following_id=?"), (follower_id, following_id))
     row = c.fetchone(); conn.close(); return row is not None
+
+def get_follow_counts(user_id):
+    conn = get_db(); c = conn.cursor()
+    c.execute(_q("SELECT COUNT(*) as cnt FROM follows WHERE following_id=?"), (user_id,))
+    followers = dict(c.fetchone())["cnt"]
+    c.execute(_q("SELECT COUNT(*) as cnt FROM follows WHERE follower_id=?"), (user_id,))
+    following = dict(c.fetchone())["cnt"]
+    conn.close()
+    return {"followers_count": followers, "following_count": following}
+
+def reset_all_data():
+    """Truncate all user data tables, keep schema. Then seed 8 default cubes."""
+    conn = get_db(); c = conn.cursor()
+    tables = [
+        'reward_claims', 'premium_subscriptions', 'user_activity',
+        'signals', 'post_comments', 'follows', 'post_likes', 'posts',
+        'direct_messages', 'message_reactions', 'messages',
+        'group_members', 'group_messages', 'groups',
+        'cube_transactions', 'key_upgrades', 'wallets',
+        'cubes', 'sessions', 'users',
+    ]
+    for t in tables:
+        try:
+            if _PG:
+                c.execute(f"TRUNCATE TABLE {t} CASCADE")
+            else:
+                c.execute(f"DELETE FROM {t}")
+        except Exception:
+            if _PG: conn.rollback()
+    if not _PG:
+        try: c.execute("DELETE FROM sqlite_sequence")
+        except Exception: pass
+    # Reset reward pool
+    if _PG:
+        c.execute("DELETE FROM reward_pool")
+        c.execute("INSERT INTO reward_pool (id,total_usd,used_usd,monthly_usd) VALUES (1,1000000,0,83333)")
+    else:
+        c.execute("DELETE FROM reward_pool")
+        c.execute("INSERT OR IGNORE INTO reward_pool (id,total_usd,used_usd,monthly_usd) VALUES (1,1000000,0,83333)")
+    conn.commit(); conn.close()
+    seed_default_cubes()
+
+def seed_default_cubes():
+    """Insert 8 permanent system cubes (owner_id=NULL). Safe to call multiple times."""
+    default_cubes = [
+        ("CUBE·GLOBAL",   "🌐", "#0095F6", "Главный куб CubeWorld"),
+        ("CUBE·CRYPTO",   "₿",  "#F7931A", "Крипто-сигналы и аналитика"),
+        ("CUBE·TECH",     "🖥",  "#4CC9F0", "Технологии и AI"),
+        ("CUBE·ART",      "🎨", "#D65DB1", "Искусство и дизайн"),
+        ("CUBE·MUSIC",    "🎵", "#845EC2", "Музыка и культура"),
+        ("CUBE·SPORTS",   "⚽", "#4ade80", "Спорт и здоровье"),
+        ("CUBE·BUSINESS", "💼", "#F9C74F", "Бизнес и стартапы"),
+        ("CUBE·GAMING",   "🎮", "#FF6B6B", "Игры и e-sports"),
+    ]
+    conn = get_db(); c = conn.cursor()
+    for (name, icon, color, description) in default_cubes:
+        key = "SYS-" + name.replace("·", "-")
+        if _PG:
+            c.execute("""INSERT INTO cubes
+                         (owner_id,name,description,icon,color,type,life_hours,expires_at,cube_key,is_active)
+                         VALUES (NULL,%s,%s,%s,%s,'public',876000,NOW()+'876000 hours'::interval,%s,1)
+                         ON CONFLICT (cube_key) DO NOTHING""",
+                      (name, description, icon, color, key))
+        else:
+            c.execute("""INSERT OR IGNORE INTO cubes
+                         (owner_id,name,description,icon,color,type,life_hours,expires_at,cube_key,is_active)
+                         VALUES (NULL,?,?,?,?,'public',876000,datetime('now','+876000 hours'),?,1)""",
+                      (name, description, icon, color, key))
+    conn.commit(); conn.close()
 
 # ── Signals ───────────────────────────────────────────────────────────────────
 
