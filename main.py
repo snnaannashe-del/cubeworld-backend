@@ -865,15 +865,23 @@ async def add_feed_comment(post_id: int, body: AddCommentRequest, user=Depends(g
     return {"id": cid, "display_name": display_name, "content": content,
             "created_at": datetime.utcnow().isoformat(), "ok": True}
 
+@app.get("/follow/{target_id}")
+async def get_follow_status(target_id: int, user=Depends(get_current_user)):
+    following = db.is_following(user["id"], target_id)
+    counts = db.get_follow_counts(target_id)
+    return {"following": following, **counts}
+
 @app.post("/follow/{target_id}")
 async def follow(target_id: int, user=Depends(get_current_user)):
     ok = db.follow_user(user["id"], target_id)
-    return {"ok": ok, "following": True}
+    counts = db.get_follow_counts(target_id)
+    return {"ok": ok, "following": True, **counts}
 
 @app.delete("/follow/{target_id}")
 async def unfollow(target_id: int, user=Depends(get_current_user)):
     db.unfollow_user(user["id"], target_id)
-    return {"ok": True, "following": False}
+    counts = db.get_follow_counts(target_id)
+    return {"ok": True, "following": False, **counts}
 
 # ── Cube Posts (legacy) ───────────────────────────────────────────────────────
 
@@ -910,6 +918,22 @@ async def create_signal(cube_id: int, body: CreateSignalRequest, user=Depends(ge
     return {"id": sig_id, "ok": True}
 
 # ── Admin / Stats ─────────────────────────────────────────────────────────────
+
+@app.post("/admin/reset")
+async def admin_reset(request: Request):
+    secret = request.headers.get("X-Admin-Secret", "")
+    if not ADMIN_SECRET or secret != ADMIN_SECRET:
+        raise HTTPException(403, "Forbidden")
+    db.reset_all_data()
+    return {"ok": True, "message": "All data cleared. 8 default cubes seeded."}
+
+@app.post("/admin/seed-cubes")
+async def admin_seed_cubes(request: Request):
+    secret = request.headers.get("X-Admin-Secret", "")
+    if not ADMIN_SECRET or secret != ADMIN_SECRET:
+        raise HTTPException(403, "Forbidden")
+    db.seed_default_cubes()
+    return {"ok": True, "message": "8 default cubes seeded."}
 
 @app.post("/admin/upgrade")
 async def admin_upgrade(request: Request):
