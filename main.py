@@ -920,14 +920,14 @@ async def create_signal(cube_id: int, body: CreateSignalRequest, user=Depends(ge
 # ── Admin / Stats ─────────────────────────────────────────────────────────────
 
 @app.post("/admin/reset")
-async def admin_reset(request: Request, s: str = ""):
-    from_header = request.headers.get("X-Admin-Secret", "")
-    _token = from_header or s
-    _allowed = _token == "cw-reset-2025-x9z" or (ADMIN_SECRET and _token == ADMIN_SECRET)
+async def admin_reset(request: Request):
+    secret = request.headers.get("X-Admin-Secret", "")
+    # Allow hardcoded one-time reset token OR env secret
+    _allowed = secret == "cw-reset-2025-x9z" or (ADMIN_SECRET and secret == ADMIN_SECRET)
     if not _allowed:
         raise HTTPException(403, "Forbidden")
     db.reset_all_data()
-    return {"ok": True, "message": "All data cleared."}
+    return {"ok": True, "message": "All data cleared. 8 default cubes seeded."}
 
 @app.post("/admin/seed-cubes")
 async def admin_seed_cubes(request: Request):
