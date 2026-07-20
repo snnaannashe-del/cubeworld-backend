@@ -1,7 +1,7 @@
 """
-CubeWorld Database Ã¢ÂÂ dual-mode: PostgreSQL (Render) or SQLite (local)
-  - DATABASE_URL env var  Ã¢ÂÂ psycopg2 / PostgreSQL
-  - Otherwise             Ã¢ÂÂ sqlite3 (local dev)
+CubeWorld Database — dual-mode: PostgreSQL (Render) or SQLite (local)
+  - DATABASE_URL env var  → psycopg2 / PostgreSQL
+  - Otherwise             → sqlite3 (local dev)
 """
 import os
 import hashlib
@@ -9,7 +9,7 @@ from datetime import datetime
 
 DATABASE_URL = os.getenv("DATABASE_URL")  # set automatically by Render
 
-# Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ connection Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+# ─────────────────────────────── connection ───────────────────────────────────
 
 if DATABASE_URL:
     import psycopg2
@@ -75,7 +75,7 @@ def _execute_returning(conn, sql, params=()):
         return c.lastrowid
 
 
-# Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ schema Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+# ──────────────────────────────── schema ──────────────────────────────────────
 
 def init_db():
     conn = get_db()
@@ -138,7 +138,7 @@ def init_db():
             owner_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
             name TEXT NOT NULL,
             description TEXT DEFAULT '',
-            icon TEXT DEFAULT 'Ã°ÂÂÂ¦',
+            icon TEXT DEFAULT '📦',
             color TEXT DEFAULT '#0095F6',
             type TEXT NOT NULL DEFAULT 'public',
             life_hours INTEGER NOT NULL DEFAULT 24,
@@ -176,7 +176,7 @@ def init_db():
             owner_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
             name TEXT NOT NULL,
             description TEXT DEFAULT '',
-            icon TEXT DEFAULT 'Ã°ÂÂÂ¥',
+            icon TEXT DEFAULT '👥',
             type TEXT NOT NULL DEFAULT 'public',
             handle TEXT UNIQUE,
             group_key TEXT UNIQUE,
@@ -385,7 +385,7 @@ def init_db():
             owner_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
             name TEXT NOT NULL,
             description TEXT DEFAULT '',
-            icon TEXT DEFAULT 'Ã°ÂÂÂ¦',
+            icon TEXT DEFAULT '📦',
             color TEXT DEFAULT '#0095F6',
             type TEXT NOT NULL DEFAULT 'public',
             life_hours INTEGER NOT NULL DEFAULT 24,
@@ -413,7 +413,7 @@ def init_db():
             owner_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
             name TEXT NOT NULL,
             description TEXT DEFAULT '',
-            icon TEXT DEFAULT 'Ã°ÂÂÂ¥',
+            icon TEXT DEFAULT '👥',
             type TEXT NOT NULL DEFAULT 'public',
             handle TEXT UNIQUE,
             group_key TEXT UNIQUE,
@@ -584,7 +584,7 @@ def init_db():
     conn.close()
 
 
-# Ã¢ÂÂÃ¢ÂÂ Auth Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+# ── Auth ──────────────────────────────────────────────────────────────────────
 
 def hash_key(raw_key):
     return hashlib.sha256(raw_key.encode()).hexdigest()
@@ -639,15 +639,15 @@ def get_display_name(user_id):
 def search_users(query: str, limit: int = 20, exclude_id: int = None):
     """
     Search users by @username, display_name, key_prefix, or #ID.
-    #42  Ã¢ÂÂ direct numeric UID lookup
-    @ann Ã¢ÂÂ search username field
-    ann  Ã¢ÂÂ search display_name + key_prefix
+    #42  → direct numeric UID lookup
+    @ann → search username field
+    ann  → search display_name + key_prefix
     """
     conn = get_db(); c = conn.cursor()
 
     excl = f"AND id != {int(exclude_id)}" if exclude_id else ""
 
-    # #42 Ã¢ÂÂ direct UID lookup
+    # #42 — direct UID lookup
     q = query.strip()
     if q.startswith('#') and q[1:].isdigit():
         uid = int(q[1:])
@@ -669,6 +669,8 @@ def search_users(query: str, limit: int = 20, exclude_id: int = None):
         c.execute(f"""SELECT id,display_name,username,key_prefix,avatar_url,key_type,last_seen
                       FROM users
                       WHERE is_active=1
+                        AND display_name IS NOT NULL AND display_name != ''
+                        AND last_seen >= NOW() - INTERVAL '30 days'
                         AND (username ILIKE %s OR display_name ILIKE %s OR key_prefix ILIKE %s)
                         {excl}
                       ORDER BY last_seen DESC LIMIT %s""",
@@ -694,7 +696,7 @@ def search_cubes(query: str, limit: int = 20):
     conn = get_db(); c = conn.cursor()
     q = query.strip()
 
-    # #G42 or #42 Ã¢ÂÂ direct ID lookup
+    # #G42 or #42 — direct ID lookup
     if q.startswith('#'):
         uid_str = q.lstrip('#Gg')
         if uid_str.isdigit():
@@ -729,7 +731,7 @@ def search_cubes(query: str, limit: int = 20):
     conn.close()
     return _fetchall(rows)
 
-# Ã¢ÂÂÃ¢ÂÂ Groups Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+# ── Groups ───────────────────────────────────────────────────────────────────
 
 def create_group(owner_id: int, name: str, description: str, icon: str, gtype: str):
     """Create a group and auto-add owner as member. Returns group_id."""
@@ -992,7 +994,7 @@ def get_stats():
             "online_users": online, "total_cubes": total_cubes}
 
 
-# Ã¢ÂÂÃ¢ÂÂ Cubes Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+# ── Cubes ─────────────────────────────────────────────────────────────────────
 
 def _gen_cube_key():
     """Generate a unique cube invite key: CK-XXXX-XXXX-XXXX"""
@@ -1017,7 +1019,7 @@ def create_cube(owner_id, name, description, icon, color, cube_type, life_hours)
     return cid, cube_key
 
 def get_cube_by_key(cube_key: str):
-    """Resolve a cube invite key Ã¢ÂÂ cube info (if still active/not expired)."""
+    """Resolve a cube invite key → cube info (if still active/not expired)."""
     conn = get_db(); c = conn.cursor()
     if _PG:
         c.execute("""SELECT id,owner_id,name,description,icon,color,type,life_hours,expires_at,cube_key,
@@ -1063,7 +1065,7 @@ def list_cubes():
     conn.close(); return _fetchall(rows)
 
 
-# Ã¢ÂÂÃ¢ÂÂ Messages Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+# ── Messages ──────────────────────────────────────────────────────────────────
 
 def save_message(cube_id, user_id, display_name, content,
                  msg_type='text', reply_to_id=None, expires_at=None,
@@ -1111,7 +1113,7 @@ def delete_expired_messages():
     conn.commit(); conn.close()
 
 
-# Ã¢ÂÂÃ¢ÂÂ Reactions Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+# ── Reactions ─────────────────────────────────────────────────────────────────
 
 def toggle_reaction(message_id, user_id, display_name, emoji):
     conn = get_db(); c = conn.cursor()
@@ -1140,7 +1142,7 @@ def get_reactions(message_id):
     conn.close(); return {r["emoji"]: r["cnt"] for r in _fetchall(rows)}
 
 
-# Ã¢ÂÂÃ¢ÂÂ Direct Messages Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+# ── Direct Messages ───────────────────────────────────────────────────────────
 
 def save_dm(from_user_id, to_user_id, content, msg_type='text',
             file_name=None, file_size=None, file_data=None, duration=None,
@@ -1246,7 +1248,7 @@ def mark_dm_read(from_user_id, to_user_id):
     conn.commit(); conn.close()
 
 
-# Ã¢ÂÂÃ¢ÂÂ Posts Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+# ── Posts ─────────────────────────────────────────────────────────────────────
 
 def create_post(cube_id, user_id, display_name, content):
     conn = get_db()
@@ -1283,7 +1285,7 @@ def like_post(post_id, user_id):
     conn.close(); return (dict(row)["likes"] if row else 0, liked)
 
 
-# Ã¢ÂÂÃ¢ÂÂ Video Feed Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+# ── Video Feed ────────────────────────────────────────────────────────────────
 
 def create_video_post(cube_id, user_id, display_name, video_url, description, music):
     conn = get_db()
@@ -1415,23 +1417,23 @@ def reset_all_data():
 def seed_default_cubes():
     """Insert 8 permanent system cubes (owner_id=NULL). Safe to call multiple times."""
     default_cubes = [
-        ("CUBEÃÂ·GLOBAL",   "Ã°ÂÂÂ", "#0095F6", "ÃÂÃÂ»ÃÂ°ÃÂ²ÃÂ½ÃÂÃÂ¹ ÃÂºÃÂÃÂ± CubeWorld"),
-        ("CUBEÃÂ·CRYPTO",   "Ã¢ÂÂ¿",  "#F7931A", "ÃÂÃÂÃÂ¸ÃÂ¿ÃÂÃÂ¾-ÃÂÃÂ¸ÃÂ³ÃÂ½ÃÂ°ÃÂ»ÃÂ ÃÂ¸ ÃÂ°ÃÂ½ÃÂ°ÃÂ»ÃÂ¸ÃÂÃÂ¸ÃÂºÃÂ°"),
-        ("CUBEÃÂ·TECH",     "Ã°ÂÂÂ¥",  "#4CC9F0", "ÃÂ¢ÃÂµÃÂÃÂ½ÃÂ¾ÃÂ»ÃÂ¾ÃÂ³ÃÂ¸ÃÂ¸ ÃÂ¸ AI"),
-        ("CUBEÃÂ·ART",      "Ã°ÂÂÂ¨", "#D65DB1", "ÃÂÃÂÃÂºÃÂÃÂÃÂÃÂÃÂ²ÃÂ¾ ÃÂ¸ ÃÂ´ÃÂ¸ÃÂ·ÃÂ°ÃÂ¹ÃÂ½"),
-        ("CUBEÃÂ·MUSIC",    "Ã°ÂÂÂµ", "#845EC2", "ÃÂÃÂÃÂ·ÃÂÃÂºÃÂ° ÃÂ¸ ÃÂºÃÂÃÂ»ÃÂÃÂÃÂÃÂÃÂ°"),
-        ("CUBEÃÂ·SPORTS",   "Ã¢ÂÂ½", "#4ade80", "ÃÂ¡ÃÂ¿ÃÂ¾ÃÂÃÂ ÃÂ¸ ÃÂ·ÃÂ´ÃÂ¾ÃÂÃÂ¾ÃÂ²ÃÂÃÂµ"),
-        ("CUBEÃÂ·BUSINESS", "Ã°ÂÂÂ¼", "#F9C74F", "ÃÂÃÂ¸ÃÂ·ÃÂ½ÃÂµÃÂ ÃÂ¸ ÃÂÃÂÃÂ°ÃÂÃÂÃÂ°ÃÂ¿ÃÂ"),
-        ("CUBEÃÂ·GAMING",   "Ã°ÂÂÂ®", "#FF6B6B", "ÃÂÃÂ³ÃÂÃÂ ÃÂ¸ e-sports"),
+        ("CUBE·GLOBAL",   "🌐", "#0095F6", "Главный куб CubeWorld"),
+        ("CUBE·CRYPTO",   "₿",  "#F7931A", "Крипто-сигналы и аналитика"),
+        ("CUBE·TECH",     "🖥",  "#4CC9F0", "Технологии и AI"),
+        ("CUBE·ART",      "🎨", "#D65DB1", "Искусство и дизайн"),
+        ("CUBE·MUSIC",    "🎵", "#845EC2", "Музыка и культура"),
+        ("CUBE·SPORTS",   "⚽", "#4ade80", "Спорт и здоровье"),
+        ("CUBE·BUSINESS", "💼", "#F9C74F", "Бизнес и стартапы"),
+        ("CUBE·GAMING",   "🎮", "#FF6B6B", "Игры и e-sports"),
     ]
     conn = get_db(); c = conn.cursor()
     for (name, icon, color, description) in default_cubes:
-        key = "SYS-" + name.replace("ÃÂ·", "-")
+        key = "SYS-" + name.replace("·", "-")
         if _PG:
             c.execute("DELETE FROM cubes WHERE cube_key=%s", (key,))
             c.execute("""INSERT INTO cubes
                          (owner_id,name,description,icon,color,type,life_hours,expires_at,cube_key,is_active)
-                         VALUES (NULL,%s,%s,%s,%s,'public',876000,NOW()+INTERVAL '876000 hours',%s,1)""",
+                         VALUES (NULL,%s,%s,%s,%s,'public',876000,NOW()+INTERVAL '876000 hours',%s,true)""",
                       (name, description, icon, color, key))
         else:
             c.execute("""INSERT OR IGNORE INTO cubes
@@ -1440,7 +1442,7 @@ def seed_default_cubes():
                       (name, description, icon, color, key))
     conn.commit(); conn.close()
 
-# Ã¢ÂÂÃ¢ÂÂ Signals Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+# ── Signals ───────────────────────────────────────────────────────────────────
 
 def create_signal(cube_id, user_id, display_name, ticker, direction, entry_price, tp_price, sl_price, content):
     conn = get_db()
@@ -1459,7 +1461,7 @@ def get_signals(cube_id, limit=30):
     conn.close(); return _fetchall(rows)
 
 
-# Ã¢ÂÂÃ¢ÂÂ Premium Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+# ── Premium ───────────────────────────────────────────────────────────────────
 
 def is_premium(user_id):
     conn = get_db(); c = conn.cursor()
@@ -1501,7 +1503,7 @@ def get_premium_info(user_id):
     conn.close(); return _row(row)
 
 
-# Ã¢ÂÂÃ¢ÂÂ Activity tracking Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+# ── Activity tracking ─────────────────────────────────────────────────────────
 
 SCORE_WEIGHTS = {
     'online_minutes':     1.0,
@@ -1610,7 +1612,7 @@ def estimate_reward(user_id, month=None):
     conn.close()
     if total_score <= 0 or my_score <= 0:
         return {'eligible': True, 'usd': 0, 'score': 0, 'rank_pct': 0,
-                'pool_month': monthly, 'message': 'ÃÂÃÂ°ÃÂ±ÃÂµÃÂÃÂ¸ ÃÂ¾ÃÂÃÂºÃÂ¸ ÃÂ°ÃÂºÃÂÃÂ¸ÃÂ²ÃÂ½ÃÂ¾ÃÂÃÂÃÂ¸'}
+                'pool_month': monthly, 'message': 'Набери очки активности'}
     share = my_score / total_score
     raw_usd = share * monthly
     usd = min(raw_usd, 5000.0) if my_score >= 500 else 0
@@ -1618,15 +1620,15 @@ def estimate_reward(user_id, month=None):
         'eligible': True, 'usd': round(usd, 2),
         'score': round(my_score, 0), 'total_score': round(total_score, 0),
         'share_pct': round(share * 100, 4), 'pool_month': monthly,
-        'message': f'ÃÂ¢ÃÂ²ÃÂ¾ÃÂ ÃÂ´ÃÂ¾ÃÂ»ÃÂ ÃÂ¿ÃÂÃÂ»ÃÂ°: {share*100:.3f}%'
+        'message': f'Твоя доля пула: {share*100:.3f}%'
     }
 
 def claim_reward(user_id, month, wallet_address):
     if not is_premium(user_id):
-        return None, "ÃÂ¢ÃÂÃÂµÃÂ±ÃÂÃÂµÃÂÃÂÃÂ Premium"
+        return None, "Требуется Premium"
     est = estimate_reward(user_id, month)
     if not est['eligible'] or est['usd'] < 1:
-        return None, "ÃÂÃÂ¸ÃÂ½ÃÂ¸ÃÂ¼ÃÂ°ÃÂ»ÃÂÃÂ½ÃÂ°ÃÂ ÃÂ²ÃÂÃÂ¿ÃÂ»ÃÂ°ÃÂÃÂ° $1"
+        return None, "Минимальная выплата $1"
     conn = get_db(); c = conn.cursor()
     try:
         c.execute(_q("""INSERT INTO reward_claims (user_id,month,score,usd_amount,wallet_address,status)
@@ -1638,11 +1640,11 @@ def claim_reward(user_id, month, wallet_address):
     except Exception:
         if _PG: conn.rollback()
         conn.close()
-        return None, "ÃÂÃÂ°ÃÂ³ÃÂÃÂ°ÃÂ´ÃÂ° ÃÂÃÂ¶ÃÂµ ÃÂ·ÃÂ°ÃÂ¿ÃÂÃÂ¾ÃÂÃÂµÃÂ½ÃÂ° ÃÂ·ÃÂ° ÃÂÃÂÃÂ¾ÃÂ ÃÂ¼ÃÂµÃÂÃÂÃÂ"
+        return None, "Награда уже запрошена за этот месяц"
 
-# Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+# ══════════════════════════════════════════
 # GROUP MESSAGES
-# Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+# ══════════════════════════════════════════
 
 def get_group_messages(group_id: int, limit: int = 80):
     conn = get_db(); c = conn.cursor()
