@@ -678,6 +678,8 @@ def search_users(query: str, limit: int = 20, exclude_id: int = None):
         c.execute(f"""SELECT id,display_name,username,key_prefix,avatar_url,key_type,last_seen
                       FROM users
                       WHERE is_active=1
+                        AND display_name IS NOT NULL AND display_name != ''
+                        AND last_seen >= datetime('now', '-30 days')
                         AND (username LIKE ? OR display_name LIKE ? OR key_prefix LIKE ?)
                         {excl}
                       ORDER BY last_seen DESC LIMIT ?""",
