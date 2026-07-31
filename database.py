@@ -1029,6 +1029,17 @@ def delete_cube(cube_id: int, owner_id: int) -> bool:
     conn.commit(); conn.close()
     return deleted
 
+def delete_all_user_cubes() -> int:
+    """Admin: delete ALL cubes with owner_id IS NOT NULL. Returns count deleted."""
+    conn = get_db(); c = conn.cursor()
+    if _PG:
+        c.execute("DELETE FROM cubes WHERE owner_id IS NOT NULL")
+    else:
+        c.execute("DELETE FROM cubes WHERE owner_id IS NOT NULL")
+    count = c.rowcount
+    conn.commit(); conn.close()
+    return count
+
 def get_cube_by_key(cube_key: str):
     """Resolve a cube invite key → cube info (if still active/not expired)."""
     conn = get_db(); c = conn.cursor()
