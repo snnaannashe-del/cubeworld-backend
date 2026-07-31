@@ -711,6 +711,14 @@ async def create_cube(body: CreateCubeRequest, user=Depends(get_current_user)):
     return {"id": cube_id, "name": name, "type": ctype, "life_hours": life_h,
             "cube_key": cube_key, "ok": True}
 
+@app.delete("/admin/cubes/all")
+async def delete_all_user_cubes(secret: str = ""):
+    """Admin endpoint: delete all user-created cubes (owner_id IS NOT NULL)"""
+    if secret != "cw-admin-reset-2025":
+        raise HTTPException(status_code=403, detail="Forbidden")
+    deleted = db.delete_all_user_cubes()
+    return {"ok": True, "deleted": deleted}
+
 @app.delete("/cubes/{cube_id}")
 async def delete_cube(cube_id: int, user=Depends(get_current_user)):
     deleted = db.delete_cube(cube_id, user["id"])
