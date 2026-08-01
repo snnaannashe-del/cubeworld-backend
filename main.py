@@ -772,39 +772,34 @@ async def kick_user_from_cube(cube_id: int, request: Request, user=Depends(get_c
 
 @app.get("/cubes/{cube_id}/online")
 async def get_cube_online_members(cube_id: int, user=Depends(get_current_user)):
-    """Return cube members for kick search: live WS users + all historical visitors."""
+    """Return cube members for kick search: live WS + historical visitors, minus banned."""
     seen = {}
-    # 1. Live WebSocket connections (always available, resets on server restart)
+    # Banned users for this cube — exclude from results
+    banned = db.get_cube_banned_ids(cube_id)
+    owner_uid = int(user["id"])
+    # 1. Live WebSocket connections
     room = cube_rooms.get(str(cube_id), {})
     for uid_str, info in room.items():
         try:
             uid = int(uid_str)
+            if uid in banned or uid == owner_uid: continue
             u = db.get_user_by_id(uid)
             if u:
-                seen[uid] = {
-                    "id": u["id"],
-                    "display_name": u["display_name"] or info.get("display_name") or "User",
-                    "avatar_url": u.get("avatar_url"),
-                    "is_online": True
-                }
+                seen[uid] = {"id": u["id"], "display_name": u["display_name"] or info.get("display_name") or "User",
+                             "avatar_url": u.get("avatar_url"), "is_online": True}
         except Exception:
             continue
-    # 2. Persistent visitors (cube_visitors backfilled from messages on startup)
+    # 2. Persistent visitors (cube_visitors, backfilled from messages on startup)
     try:
         for v in db.get_cube_visitors(cube_id, limit=100):
             uid = v["id"]
+            if uid in banned or uid == owner_uid: continue
             if uid not in seen:
-                seen[uid] = {
-                    "id": uid,
-                    "display_name": v["display_name"] or "User",
-                    "avatar_url": v.get("avatar_url"),
-                    "is_online": False
-                }
+                seen[uid] = {"id": uid, "display_name": v["display_name"] or "User",
+                             "avatar_url": v.get("avatar_url"), "is_online": False}
     except Exception:
-        pass  # safe fallback — live users are already in seen
-    # 3. Exclude the requesting user (owner) from kick list
-    owner_uid = int(user["id"])
-    return [v for v in seen.values() if int(v["id"]) != owner_uid]
+        pass
+    return list(seen.values())
 
 @app.post("/cubes/join")
 async def join_cube_by_key(body: JoinCubeRequest):
