@@ -256,6 +256,11 @@ async def get_my_cubes(user=Depends(get_current_user)):
     """Return all cubes owned by the current user (including expired/inactive)."""
     return db.get_my_cubes(int(user["id"]))
 
+@app.get("/me/cube-memberships")
+async def get_cube_memberships(user=Depends(get_current_user)):
+    """Return all cubes the user has joined (visited) — used to restore world after logout/login."""
+    return db.get_user_joined_cubes(int(user["id"]))
+
 @app.patch("/me")
 async def update_me(body: UpdateProfileRequest, user=Depends(get_current_user)):
     db.update_profile(user["id"], body.display_name, body.avatar_url)
@@ -810,12 +815,22 @@ async def get_cube_online_members(cube_id: int, user=Depends(get_current_user)):
     return list(seen.values())
 
 @app.post("/cubes/join")
-async def join_cube_by_key(body: JoinCubeRequest):
-    """Resolve a cube invite key — returns cube info if valid."""
+async def join_cube_by_key(body: JoinCubeRequest, request: Request):
+    """Resolve a cube invite key — returns cube info if valid. Records membership if authenticated."""
     key = body.cube_key.strip().upper()
     cube = db.get_cube_by_key(key)
     if not cube:
         raise HTTPException(status_code=404, detail="Ключ не найден или куб истёк")
+    # Record membership if user is authenticated (optional — join still works without token)
+    try:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            payload = jwt.decode(auth_header[7:], SECRET_KEY, algorithms=[JWT_ALG])
+            user_id = int(payload["sub"])
+            display_name = db.get_display_name(user_id) or "User"
+            db.record_cube_visit(cube["id"], user_id, display_name)
+    except Exception:
+        pass
     return {
         "id":         cube["id"],
         "name":       cube["name"],
