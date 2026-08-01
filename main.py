@@ -811,12 +811,22 @@ async def get_cube_online_members(cube_id: int, user=Depends(get_current_user)):
     return list(seen.values())
 
 @app.post("/cubes/join")
-async def join_cube_by_key(body: JoinCubeRequest):
+async def join_cube_by_key(body: JoinCubeRequest, request: Request):
     """Resolve a cube invite key — returns cube info if valid."""
     key = body.cube_key.strip().upper()
     cube = db.get_cube_by_key(key)
     if not cube:
         raise HTTPException(status_code=404, detail="Ключ не найден или куб истёк")
+    # Record visitor immediately so they appear in owner's kick list
+    try:
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            payload = decode_access_token(auth[7:])
+            uid = int(payload["sub"])
+            dname = db.get_display_name(uid)
+            db.record_cube_visit(cube["id"], uid, dname or "User")
+    except Exception:
+        pass
     return {
         "id":         cube["id"],
         "name":       cube["name"],
