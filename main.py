@@ -251,6 +251,11 @@ async def get_me(user=Depends(get_current_user)):
             "cube_balance": user["cube_balance"], "created_at": user["created_at"],
             "last_seen": user["last_seen"]}
 
+@app.get("/me/cubes")
+async def get_my_cubes(user=Depends(get_current_user)):
+    """Return all cubes owned by the current user (including expired/inactive)."""
+    return db.get_my_cubes(int(user["id"]))
+
 @app.patch("/me")
 async def update_me(body: UpdateProfileRequest, user=Depends(get_current_user)):
     db.update_profile(user["id"], body.display_name, body.avatar_url)
@@ -706,7 +711,7 @@ async def create_cube(body: CreateCubeRequest, user=Depends(get_current_user)):
     icon      = body.icon[:8]
     color     = body.color[:20]
     ctype     = "public" if body.type == "public" else "private"
-    life_h    = max(1, min(body.life_hours, 720))
+    life_h    = max(1, min(body.life_hours, 8760))
     cube_id, cube_key = db.create_cube(user["id"], name, desc, icon, color, ctype, life_h)
     return {"id": cube_id, "name": name, "type": ctype, "life_hours": life_h,
             "cube_key": cube_key, "ok": True}
@@ -725,6 +730,81 @@ async def delete_cube(cube_id: int, user=Depends(get_current_user)):
     if not deleted:
         raise HTTPException(status_code=404, detail="Куб не найден или вы не владелец")
     return {"ok": True, "deleted_id": cube_id}
+
+@app.post("/cubes/{cube_id}/kick")
+async def kick_user_from_cube(cube_id: int, request: Request, user=Depends(get_current_user)):
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "invalid json body")
+    uid_str = str(body.get("uid","")).strip().lstrip("#")
+    if not uid_str:
+        raise HTTPException(400, "uid required")
+    try:
+        target_uid = int(uid_str)
+    except ValueError:
+        raise HTTPException(400, "invalid uid")
+    # Check ownership directly — works even on expired/inactive cubes
+    conn = db.get_db()
+    cur = conn.cursor()
+    cur.execute(db._q("SELECT owner_id FROM cubes WHERE id=?"), (cube_id,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(404, "Куб не найден")
+    row_owner = row["owner_id"] if db._PG else row[0]
+    if int(row_owner) != int(user["id"]):
+        raise HTTPException(403, "Вы не владелец куба")
+    # Record ban (ignore if already banned)
+    try:
+        db.ban_user_from_cube(cube_id, target_uid, int(user["id"]))
+    except Exception:
+        pass
+    # Kick via WebSocket if online
+    cube_id_str = str(cube_id)
+    if cube_id_str in cube_rooms and str(target_uid) in cube_rooms[cube_id_str]:
+        try:
+            await cube_rooms[cube_id_str][str(target_uid)]["ws"].send_json({"type":"kicked"})
+            await cube_rooms[cube_id_str][str(target_uid)]["ws"].close(code=4003)
+        except Exception:
+            pass
+    return {"ok": True}
+
+@app.get("/cubes/{cube_id}/online")
+async def get_cube_online_members(cube_id: int, user=Depends(get_current_user)):
+    """Return cube members for kick search: live WS users + all historical visitors."""
+    seen = {}
+    # 1. Live WebSocket connections (always available, resets on server restart)
+    room = cube_rooms.get(str(cube_id), {})
+    for uid_str, info in room.items():
+        try:
+            uid = int(uid_str)
+            u = db.get_user_by_id(uid)
+            if u:
+                seen[uid] = {
+                    "id": u["id"],
+                    "display_name": u["display_name"] or info.get("display_name") or "User",
+                    "avatar_url": u.get("avatar_url"),
+                    "is_online": True
+                }
+        except Exception:
+            continue
+    # 2. Persistent visitors (cube_visitors backfilled from messages on startup)
+    try:
+        for v in db.get_cube_visitors(cube_id, limit=100):
+            uid = v["id"]
+            if uid not in seen:
+                seen[uid] = {
+                    "id": uid,
+                    "display_name": v["display_name"] or "User",
+                    "avatar_url": v.get("avatar_url"),
+                    "is_online": False
+                }
+    except Exception:
+        pass  # safe fallback — live users are already in seen
+    # 3. Exclude the requesting user (owner) from kick list
+    owner_uid = int(user["id"])
+    return [v for v in seen.values() if int(v["id"]) != owner_uid]
 
 @app.post("/cubes/join")
 async def join_cube_by_key(body: JoinCubeRequest):
@@ -755,14 +835,6 @@ async def get_cube_key(cube_id: int, user=Depends(get_current_user)):
 @app.get("/cubes/{cube_id}/messages")
 async def get_messages(cube_id: int, limit: int = 50):
     return db.get_messages(cube_id, min(limit, 100))
-
-@app.get("/cubes/{cube_id}/online")
-async def cube_online_users(cube_id: str):
-    """Return list of online users in this cube's WS room."""
-    room = cube_rooms.get(cube_id, {})
-    users = [{"user_id": uid, "display_name": info["display_name"]}
-             for uid, info in room.items()]
-    return {"online": len(users), "users": users}
 
 @app.post("/messages/{msg_id}/react")
 async def react_to_message(msg_id: int, body: ReactRequest, user=Depends(get_current_user)):
@@ -973,7 +1045,7 @@ async def stats():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "4.0.0"}
+    return {"status": "ok", "version": "5.1.0", "kick_route": "active", "cube_visitors": "active"}
 
 # ── WebSocket: per-cube rooms ─────────────────────────────────────────────────
 # cube_rooms: { cube_id_str: { user_id_str: {"ws": websocket, "display_name": str} } }
@@ -1024,10 +1096,19 @@ async def ws_cube(websocket: WebSocket, token: str, cube_id: str):
         display_name = db.get_display_name(int(user_id))
         db.update_last_seen(int(user_id))
 
+        # Check if user is banned from this cube
+        if cube_id.isdigit() and db.is_user_banned_from_cube(int(cube_id), int(user_id)):
+            await websocket.send_json({"type":"kicked","reason":"banned"})
+            await websocket.close(code=4003)
+            return
+
         if cube_id not in cube_rooms:
             cube_rooms[cube_id] = {}
         cube_rooms[cube_id][user_id] = {"ws": websocket, "display_name": display_name}
         user_ws[user_id] = websocket  # register for direct notifications
+        # Persist visit so kick-search works even after server restart
+        if cube_id.isdigit():
+            db.record_cube_visit(int(cube_id), int(user_id), display_name)
 
         online = len(cube_rooms[cube_id])
 
