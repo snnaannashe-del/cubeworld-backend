@@ -797,19 +797,19 @@ async def get_cube_online_members(cube_id: int, user=Depends(get_current_user)):
                              "avatar_url": u.get("avatar_url"), "is_online": True}
         except Exception:
             continue
-    # 2. Persistent visitors (cube_visitors)
+    # 2. cube_members — users who joined via key (primary source)
     try:
-        for v in db.get_cube_visitors(cube_id, limit=100):
+        for v in db.get_cube_members(cube_id):
             uid = v["id"]
             if uid in banned or uid == owner_uid: continue
             if uid not in seen:
                 seen[uid] = {"id": uid, "display_name": v["display_name"] or "User",
-                             "avatar_url": v.get("avatar_url"), "is_online": False}
+                             "avatar_url": v.get("avatar_url"), "is_online": uid in [int(k) for k in cube_rooms.get(str(cube_id), {})]}
     except Exception:
         pass
-    # 3. Fallback: message senders (catches pre-fix users who never had visit recorded)
+    # 3. cube_visitors fallback (legacy data)
     try:
-        for v in db.get_cube_message_senders(cube_id, limit=100):
+        for v in db.get_cube_visitors(cube_id, limit=100):
             uid = v["id"]
             if uid in banned or uid == owner_uid: continue
             if uid not in seen:
@@ -835,12 +835,13 @@ async def join_cube_by_key(body: JoinCubeRequest, request: Request):
     cube = db.get_cube_by_key(key)
     if not cube:
         raise HTTPException(status_code=404, detail="Ключ не найден или куб истёк")
-    # Record the visitor immediately (auth token optional)
+    # Record membership immediately (auth token optional)
     try:
         auth = request.headers.get("Authorization", "")
         if auth.startswith("Bearer "):
             payload = decode_access_token(auth[7:])
             uid = int(payload["sub"])
+            db.add_cube_member(cube["id"], uid)
             db.record_cube_visit(cube["id"], uid, db.get_display_name(uid) or "User")
     except Exception:
         pass
