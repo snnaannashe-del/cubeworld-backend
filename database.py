@@ -202,6 +202,8 @@ def init_db():
             cube_id INTEGER NOT NULL,
             user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             banned_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            ip_hash TEXT DEFAULT NULL,
+            device_id TEXT DEFAULT NULL,
             PRIMARY KEY (cube_id, user_id)
         )""")
         c.execute("""CREATE TABLE IF NOT EXISTS cube_visitors (
@@ -211,6 +213,12 @@ def init_db():
             last_visit TIMESTAMP NOT NULL DEFAULT NOW(),
             PRIMARY KEY (cube_id, user_id)
         )""")
+        # PG migration: add ip_hash + device_id to cube_bans if missing
+        for _col, _def in [('ip_hash', 'TEXT DEFAULT NULL'), ('device_id', 'TEXT DEFAULT NULL')]:
+            c.execute("SELECT column_name FROM information_schema.columns WHERE table_name='cube_bans' AND column_name=%s", (_col,))
+            if not c.fetchone():
+                try: c.execute(f"ALTER TABLE cube_bans ADD COLUMN IF NOT EXISTS {_col} {_def}")
+                except Exception: pass
         conn.commit()
         c.execute("""CREATE TABLE IF NOT EXISTS messages (
             id SERIAL PRIMARY KEY,
