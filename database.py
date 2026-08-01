@@ -1214,6 +1214,39 @@ def get_cube_visitors(cube_id: int, limit: int = 100):
     except Exception:
         return []
 
+def get_user_joined_cubes(user_id: int):
+    """Return all cubes a user has visited (for restoring joined cubes after logout/login)."""
+    try:
+        conn = get_db(); c = conn.cursor()
+        if _PG:
+            c.execute("""
+                SELECT cb.id, cb.name, cb.icon, cb.color, cb.type, cb.cube_key,
+                       CAST(EXTRACT(EPOCH FROM (cb.expires_at - NOW())) AS INTEGER) as life_left_seconds
+                FROM cube_visitors cv
+                JOIN cubes cb ON cb.id = cv.cube_id
+                WHERE cv.user_id = %s
+                  AND cb.owner_id != %s
+                  AND (cb.expires_at IS NULL OR cb.expires_at > NOW())
+                ORDER BY cv.last_visit DESC
+                LIMIT 100
+            """, (user_id, user_id))
+        else:
+            c.execute("""
+                SELECT cb.id, cb.name, cb.icon, cb.color, cb.type, cb.cube_key,
+                       CAST((julianday(cb.expires_at) - julianday('now')) * 86400 AS INTEGER) as life_left_seconds
+                FROM cube_visitors cv
+                JOIN cubes cb ON cb.id = cv.cube_id
+                WHERE cv.user_id = ?
+                  AND cb.owner_id != ?
+                  AND (cb.expires_at IS NULL OR cb.expires_at > datetime('now'))
+                ORDER BY cv.last_visit DESC
+                LIMIT 100
+            """, (user_id, user_id))
+        rows = c.fetchall(); conn.close()
+        return _fetchall(rows)
+    except Exception:
+        return []
+
 def get_cube_message_senders(cube_id: int, limit: int = 50):
     """Return distinct users who sent messages in this cube (recent participants for kick search)."""
     conn = get_db(); c = conn.cursor()
