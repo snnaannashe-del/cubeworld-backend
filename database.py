@@ -1227,9 +1227,10 @@ def get_user_joined_cubes(user_id: int):
                 WHERE cv.user_id = %s
                   AND cb.owner_id != %s
                   AND (cb.expires_at IS NULL OR cb.expires_at > NOW())
+                  AND NOT EXISTS (SELECT 1 FROM cube_bans ban WHERE ban.cube_id = cb.id AND ban.user_id = %s)
                 ORDER BY cv.last_visit DESC
                 LIMIT 100
-            """, (user_id, user_id))
+            """, (user_id, user_id, user_id))
         else:
             c.execute("""
                 SELECT cb.id, cb.name, cb.icon, cb.color, cb.type, cb.cube_key,
@@ -1239,9 +1240,10 @@ def get_user_joined_cubes(user_id: int):
                 WHERE cv.user_id = ?
                   AND cb.owner_id != ?
                   AND (cb.expires_at IS NULL OR cb.expires_at > datetime('now'))
+                  AND NOT EXISTS (SELECT 1 FROM cube_bans ban WHERE ban.cube_id = cb.id AND ban.user_id = ?)
                 ORDER BY cv.last_visit DESC
                 LIMIT 100
-            """, (user_id, user_id))
+            """, (user_id, user_id, user_id))
         rows = c.fetchall(); conn.close()
         return _fetchall(rows)
     except Exception:
