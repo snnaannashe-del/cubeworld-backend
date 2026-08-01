@@ -211,12 +211,6 @@ def init_db():
             last_visit TIMESTAMP NOT NULL DEFAULT NOW(),
             PRIMARY KEY (cube_id, user_id)
         )""")
-        c.execute("""CREATE TABLE IF NOT EXISTS cube_members (
-            cube_id INTEGER NOT NULL,
-            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            joined_at TIMESTAMP NOT NULL DEFAULT NOW(),
-            PRIMARY KEY (cube_id, user_id)
-        )""")
         conn.commit()
         c.execute("""CREATE TABLE IF NOT EXISTS messages (
             id SERIAL PRIMARY KEY,
@@ -470,12 +464,6 @@ def init_db():
             user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             display_name TEXT,
             last_visit TEXT NOT NULL DEFAULT (datetime('now')),
-            PRIMARY KEY (cube_id, user_id)
-        )""")
-        c.execute("""CREATE TABLE IF NOT EXISTS cube_members (
-            cube_id INTEGER NOT NULL,
-            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            joined_at TEXT NOT NULL DEFAULT (datetime('now')),
             PRIMARY KEY (cube_id, user_id)
         )""")
         conn.commit()
@@ -1979,37 +1967,3 @@ def is_user_banned_from_cube(cube_id: int, user_id: int) -> bool:
     c.execute(_q("SELECT 1 FROM cube_bans WHERE cube_id=? AND user_id=?"), (cube_id, user_id))
     row = c.fetchone(); conn.close()
     return row is not None
-
-def add_cube_member(cube_id: int, user_id: int):
-    """Record that a user joined this cube via key. Idempotent."""
-    try:
-        conn = get_db(); c = conn.cursor()
-        if _PG:
-            c.execute("""INSERT INTO cube_members (cube_id, user_id)
-                         VALUES (%s, %s) ON CONFLICT (cube_id, user_id) DO NOTHING""",
-                      (cube_id, user_id))
-        else:
-            c.execute("""INSERT OR IGNORE INTO cube_members (cube_id, user_id)
-                         VALUES (?, ?)""", (cube_id, user_id))
-        conn.commit(); conn.close()
-    except Exception:
-        pass
-
-def get_cube_members(cube_id: int):
-    """Return all users who joined this cube via key (non-banned)."""
-    try:
-        conn = get_db(); c = conn.cursor()
-        if _PG:
-            c.execute("""SELECT u.id, u.display_name, u.avatar_url
-                         FROM cube_members cm JOIN users u ON u.id = cm.user_id
-                         WHERE cm.cube_id = %s AND u.is_active = 1
-                         ORDER BY cm.joined_at DESC""", (cube_id,))
-        else:
-            c.execute("""SELECT u.id, u.display_name, u.avatar_url
-                         FROM cube_members cm JOIN users u ON u.id = cm.user_id
-                         WHERE cm.cube_id = ? AND u.is_active = 1
-                         ORDER BY cm.joined_at DESC""", (cube_id,))
-        rows = c.fetchall(); conn.close()
-        return _fetchall(rows)
-    except Exception:
-        return []
