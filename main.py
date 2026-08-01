@@ -760,12 +760,20 @@ async def kick_user_from_cube(cube_id: int, request: Request, user=Depends(get_c
         db.ban_user_from_cube(cube_id, target_uid, int(user["id"]))
     except Exception:
         pass
-    # Kick via WebSocket if online
+    # Kick via WebSocket — cube-room first, then global WS fallback
     cube_id_str = str(cube_id)
+    kick_msg = {"type": "kicked", "cube_id": cube_id}
     if cube_id_str in cube_rooms and str(target_uid) in cube_rooms[cube_id_str]:
         try:
-            await cube_rooms[cube_id_str][str(target_uid)]["ws"].send_json({"type":"kicked"})
+            await cube_rooms[cube_id_str][str(target_uid)]["ws"].send_json(kick_msg)
             await cube_rooms[cube_id_str][str(target_uid)]["ws"].close(code=4003)
+        except Exception:
+            pass
+    # Always also try global WS (user may be in world view, not inside cube)
+    gws = user_ws.get(str(target_uid))
+    if gws:
+        try:
+            await gws.send_json(kick_msg)
         except Exception:
             pass
     return {"ok": True}
