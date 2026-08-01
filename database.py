@@ -733,11 +733,15 @@ def search_users(query: str, limit: int = 20, exclude_id: int = None):
 
     excl = f"AND id != {int(exclude_id)}" if exclude_id else ""
 
-    # #42 — direct UID lookup
+    # #42 or plain digits — direct UID lookup
     q = query.strip()
+    raw_id = None
     if q.startswith('#') and q[1:].isdigit():
-        uid = int(q[1:])
-        c.execute(_q(f"SELECT id,display_name,username,key_prefix,avatar_url,key_type,last_seen FROM users WHERE id=? AND is_active=1 {excl}"), (uid,))
+        raw_id = int(q[1:])
+    elif q.isdigit():
+        raw_id = int(q)
+    if raw_id is not None:
+        c.execute(_q(f"SELECT id,display_name,username,key_prefix,avatar_url,key_type,last_seen FROM users WHERE id=? AND is_active=1 {excl}"), (raw_id,))
         row = c.fetchone()
         conn.close()
         return [dict(row)] if row else []
@@ -1930,6 +1934,16 @@ def get_group_members(group_id: int, limit: int = 50):
                      WHERE gm.group_id=? ORDER BY gm.joined_at DESC LIMIT ?""", (group_id, limit))
     rows = _fetchall(c.fetchall()); conn.close()
     return rows
+
+def get_cube_banned_ids(cube_id: int) -> set:
+    """Return set of user_ids banned from this cube."""
+    try:
+        conn = get_db(); c = conn.cursor()
+        c.execute(_q("SELECT user_id FROM cube_bans WHERE cube_id=?"), (cube_id,))
+        rows = c.fetchall(); conn.close()
+        return {(r["user_id"] if _PG else r[0]) for r in rows}
+    except Exception:
+        return set()
 
 def ban_user_from_cube(cube_id: int, user_id: int, owner_id: int) -> bool:
     """Ban user from cube. Returns True if cube exists and requester is owner."""
