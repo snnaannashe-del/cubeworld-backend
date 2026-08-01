@@ -760,25 +760,14 @@ async def kick_user_from_cube(cube_id: int, request: Request, user=Depends(get_c
         db.ban_user_from_cube(cube_id, target_uid, int(user["id"]))
     except Exception:
         pass
-    # Kick via WebSocket — cube-room WS first, then global user_ws fallback
+    # Kick via WebSocket if online
     cube_id_str = str(cube_id)
-    kicked_msg = {"type": "kicked", "cube_id": cube_id}
-    sent_via_room = False
     if cube_id_str in cube_rooms and str(target_uid) in cube_rooms[cube_id_str]:
         try:
-            await cube_rooms[cube_id_str][str(target_uid)]["ws"].send_json(kicked_msg)
+            await cube_rooms[cube_id_str][str(target_uid)]["ws"].send_json({"type":"kicked"})
             await cube_rooms[cube_id_str][str(target_uid)]["ws"].close(code=4003)
-            sent_via_room = True
         except Exception:
             pass
-    if not sent_via_room:
-        # User is in world view (not inside cube) — deliver via global WS
-        gws = user_ws.get(str(target_uid))
-        if gws:
-            try:
-                await gws.send_json(kicked_msg)
-            except Exception:
-                pass
     return {"ok": True}
 
 @app.get("/cubes/{cube_id}/online")
@@ -811,17 +800,6 @@ async def get_cube_online_members(cube_id: int, user=Depends(get_current_user)):
     except Exception:
         pass
     return list(seen.values())
-
-@app.post("/cubes/{cube_id}/ping-member")
-async def ping_cube_member(cube_id: int, user=Depends(get_current_user)):
-    """Register current authenticated user as a cube visitor (for kick-search discovery).
-    Called silently on page load for all cubes the user has visited."""
-    try:
-        display_name = db.get_display_name(int(user["id"])) or user.get("display_name") or "User"
-        db.record_cube_visit(cube_id, int(user["id"]), display_name)
-    except Exception:
-        pass
-    return {"ok": True}
 
 @app.post("/cubes/join")
 async def join_cube_by_key(body: JoinCubeRequest):
