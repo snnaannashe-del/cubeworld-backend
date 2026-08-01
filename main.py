@@ -1104,15 +1104,19 @@ async def health():
 
 # ── WebSocket: per-cube rooms ─────────────────────────────────────────────────
 # cube_rooms: { cube_id_str: { user_id_str: {"ws": websocket, "display_name": str} } }
-# user_ws: { user_id_str: websocket }  — tracks the most recent WS for each user (for direct notifications)
+# global_user_ws: { user_id_str: websocket }  — ALWAYS-ON global /ws/{token} connection
+# user_ws: { user_id_str: websocket }  — most recent WS (cube / group / global)
+# _notify_user uses global_user_ws so cube-room disconnects never lose the channel.
 
 cube_rooms: Dict[str, Dict[str, dict]] = {}
+global_user_ws: Dict[str, object] = {}   # ← persistent across cube join/leave
 user_ws: Dict[str, object] = {}
 _group_ws: Dict[str, Dict[str, object]] = {}  # group_id_str -> {user_id_str: websocket}
 
 async def _notify_user(user_id: int, msg: dict):
-    """Send a direct message to a user's current WebSocket, if connected."""
-    ws = user_ws.get(str(user_id))
+    """Send a direct message to a user via their always-on global WebSocket.
+    Falls back to any active WS (cube/group) if global is not connected."""
+    ws = global_user_ws.get(str(user_id)) or user_ws.get(str(user_id))
     if ws:
         try:
             await ws.send_json(msg)
@@ -1160,7 +1164,8 @@ async def ws_cube(websocket: WebSocket, token: str, cube_id: str):
         if cube_id not in cube_rooms:
             cube_rooms[cube_id] = {}
         cube_rooms[cube_id][user_id] = {"ws": websocket, "display_name": display_name}
-        user_ws[user_id] = websocket  # register for direct notifications
+        user_ws[user_id] = websocket  # track cube WS (for cube-specific sends)
+        # NOTE: global_user_ws is NOT updated here — it's managed only by /ws/{token}
         # Persist visit so kick-search works even after server restart
         if cube_id.isdigit():
             db.record_cube_visit(int(cube_id), int(user_id), display_name)
@@ -1318,7 +1323,10 @@ async def ws_cube(websocket: WebSocket, token: str, cube_id: str):
     finally:
         if user_id and cube_id in cube_rooms:
             cube_rooms[cube_id].pop(user_id, None)
-            user_ws.pop(user_id, None)  # unregister from direct notifications
+            # Only clear user_ws if THIS websocket is still the registered one
+            # (don't clear if global_user_ws has already re-registered a newer connection)
+            if user_ws.get(user_id) is websocket:
+                user_ws.pop(user_id, None)
             if not cube_rooms[cube_id]:
                 del cube_rooms[cube_id]
             else:
@@ -1396,7 +1404,8 @@ async def websocket_legacy(websocket: WebSocket, token: str):
         payload = decode_access_token(token)
         user_id = payload["sub"]
         connected_users[user_id] = websocket
-        user_ws[user_id] = websocket  # register for DM delivery
+        user_ws[user_id] = websocket
+        global_user_ws[user_id] = websocket  # always-on channel for kick/delete notifications
         await websocket.send_json({"type": "connected", "user_id": user_id})
         while True:
             data = await websocket.receive_json()
@@ -1424,4 +1433,6 @@ async def websocket_legacy(websocket: WebSocket, token: str):
         await websocket.close(code=4001)
     finally:
         connected_users.pop(user_id, None)
-        user_ws.pop(user_id, None)
+        global_user_ws.pop(user_id, None)  # unregister always-on channel
+        if user_ws.get(user_id) is websocket:
+            user_ws.pop(user_id, None)
