@@ -760,20 +760,12 @@ async def kick_user_from_cube(cube_id: int, request: Request, user=Depends(get_c
         db.ban_user_from_cube(cube_id, target_uid, int(user["id"]))
     except Exception:
         pass
-    # Kick via WebSocket — cube room first, global WS fallback
+    # Kick via WebSocket if online
     cube_id_str = str(cube_id)
-    tuid_str = str(target_uid)
-    kicked_live = False
-    if cube_id_str in cube_rooms and tuid_str in cube_rooms[cube_id_str]:
+    if cube_id_str in cube_rooms and str(target_uid) in cube_rooms[cube_id_str]:
         try:
-            await cube_rooms[cube_id_str][tuid_str]["ws"].send_json({"type":"kicked","cube_id":cube_id})
-            await cube_rooms[cube_id_str][tuid_str]["ws"].close(code=4003)
-            kicked_live = True
-        except Exception:
-            pass
-    if not kicked_live and tuid_str in user_ws:
-        try:
-            await user_ws[tuid_str].send_json({"type":"kicked","cube_id":cube_id})
+            await cube_rooms[cube_id_str][str(target_uid)]["ws"].send_json({"type":"kicked"})
+            await cube_rooms[cube_id_str][str(target_uid)]["ws"].close(code=4003)
         except Exception:
             pass
     return {"ok": True}
@@ -797,17 +789,7 @@ async def get_cube_online_members(cube_id: int, user=Depends(get_current_user)):
                              "avatar_url": u.get("avatar_url"), "is_online": True}
         except Exception:
             continue
-    # 2. cube_members — users who joined via key (primary source)
-    try:
-        for v in db.get_cube_members(cube_id):
-            uid = v["id"]
-            if uid in banned or uid == owner_uid: continue
-            if uid not in seen:
-                seen[uid] = {"id": uid, "display_name": v["display_name"] or "User",
-                             "avatar_url": v.get("avatar_url"), "is_online": uid in [int(k) for k in cube_rooms.get(str(cube_id), {})]}
-    except Exception:
-        pass
-    # 3. cube_visitors fallback (legacy data)
+    # 2. Persistent visitors (cube_visitors, backfilled from messages on startup)
     try:
         for v in db.get_cube_visitors(cube_id, limit=100):
             uid = v["id"]
@@ -819,32 +801,13 @@ async def get_cube_online_members(cube_id: int, user=Depends(get_current_user)):
         pass
     return list(seen.values())
 
-@app.post("/cubes/{cube_id}/visit")
-async def record_visit(cube_id: int, user=Depends(get_current_user)):
-    """Record cube visit — called from frontend enterInterior (reliable HTTP fallback)."""
-    try:
-        db.record_cube_visit(cube_id, int(user["id"]), db.get_display_name(int(user["id"])) or "User")
-    except Exception:
-        pass
-    return {"ok": True}
-
 @app.post("/cubes/join")
-async def join_cube_by_key(body: JoinCubeRequest, request: Request):
+async def join_cube_by_key(body: JoinCubeRequest):
     """Resolve a cube invite key — returns cube info if valid."""
     key = body.cube_key.strip().upper()
     cube = db.get_cube_by_key(key)
     if not cube:
         raise HTTPException(status_code=404, detail="Ключ не найден или куб истёк")
-    # Record membership immediately (auth token optional)
-    try:
-        auth = request.headers.get("Authorization", "")
-        if auth.startswith("Bearer "):
-            payload = decode_access_token(auth[7:])
-            uid = int(payload["sub"])
-            db.add_cube_member(cube["id"], uid)
-            db.record_cube_visit(cube["id"], uid, db.get_display_name(uid) or "User")
-    except Exception:
-        pass
     return {
         "id":         cube["id"],
         "name":       cube["name"],
