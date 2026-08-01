@@ -726,9 +726,39 @@ async def delete_all_user_cubes(secret: str = ""):
 
 @app.delete("/cubes/{cube_id}")
 async def delete_cube(cube_id: int, user=Depends(get_current_user)):
+    # Get cube name and all visitors BEFORE deleting (so we can notify them)
+    cube_name = ""
+    visitor_uids = []
+    try:
+        conn2 = db.get_db(); c2 = conn2.cursor()
+        c2.execute(db._q("SELECT name FROM cubes WHERE id=? AND owner_id=?"), (cube_id, user["id"]))
+        row2 = c2.fetchone()
+        if row2:
+            cube_name = row2["name"] if db._PG else row2[0]
+        c2.execute(db._q("SELECT user_id FROM cube_visitors WHERE cube_id=?"), (cube_id,))
+        visitor_uids = [r["user_id"] if db._PG else r[0] for r in c2.fetchall()]
+        conn2.close()
+    except Exception:
+        pass
     deleted = db.delete_cube(cube_id, user["id"])
     if not deleted:
         raise HTTPException(status_code=404, detail="Куб не найден или вы не владелец")
+    # Notify all members (visitors) that cube was deleted — they'll remove it from their world
+    notify_msg = {"type": "cube_deleted", "cube_id": cube_id, "cube_name": cube_name}
+    for uid in visitor_uids:
+        try:
+            await _notify_user(int(uid), notify_msg)
+        except Exception:
+            pass
+    # Also broadcast to anyone currently in the cube room WS
+    cube_id_str = str(cube_id)
+    if cube_id_str in cube_rooms:
+        for uid_str, info in list(cube_rooms[cube_id_str].items()):
+            try:
+                await info["ws"].send_json(notify_msg)
+                await info["ws"].close(code=1001)
+            except Exception:
+                pass
     return {"ok": True, "deleted_id": cube_id}
 
 @app.post("/cubes/{cube_id}/kick")
@@ -760,14 +790,29 @@ async def kick_user_from_cube(cube_id: int, request: Request, user=Depends(get_c
         db.ban_user_from_cube(cube_id, target_uid, int(user["id"]))
     except Exception:
         pass
-    # Kick via WebSocket if online
+    # Get cube name for notification
+    cube_name = ""
+    try:
+        conn3 = db.get_db(); c3 = conn3.cursor()
+        c3.execute(db._q("SELECT name FROM cubes WHERE id=?"), (cube_id,))
+        r3 = c3.fetchone()
+        if r3: cube_name = r3["name"] if db._PG else r3[0]
+        conn3.close()
+    except Exception:
+        pass
+    # Kick via WebSocket if user is currently inside the cube room
     cube_id_str = str(cube_id)
     if cube_id_str in cube_rooms and str(target_uid) in cube_rooms[cube_id_str]:
         try:
-            await cube_rooms[cube_id_str][str(target_uid)]["ws"].send_json({"type":"kicked"})
+            await cube_rooms[cube_id_str][str(target_uid)]["ws"].send_json({"type":"kicked","cube_name":cube_name})
             await cube_rooms[cube_id_str][str(target_uid)]["ws"].close(code=4003)
         except Exception:
             pass
+    # Also notify via global WS (_globalWs) so world.html removes the cube even if not inside
+    try:
+        await _notify_user(target_uid, {"type": "cube_removed", "cube_id": cube_id, "cube_name": cube_name})
+    except Exception:
+        pass
     return {"ok": True}
 
 @app.get("/cubes/{cube_id}/online")
