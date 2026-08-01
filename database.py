@@ -520,6 +520,11 @@ def init_db():
             user_id INTEGER NOT NULL,
             PRIMARY KEY (post_id, user_id)
         )""")
+        # cube_bans: add ip_hash + device_id for cross-account blocking
+        try: _sqlite_add_col('cube_bans', 'ip_hash', 'TEXT DEFAULT NULL')
+        except Exception: pass
+        try: _sqlite_add_col('cube_bans', 'device_id', 'TEXT DEFAULT NULL')
+        except Exception: pass
         # Video feed extras (migrations so existing DBs get new columns)
         _sqlite_add_col('posts', 'video_url', 'TEXT DEFAULT NULL')
         _sqlite_add_col('posts', 'description', 'TEXT DEFAULT NULL')
@@ -618,6 +623,11 @@ def init_db():
         try: _sqlite_add_col('posts', 'image_url', 'TEXT')
         except Exception: pass
         try: _sqlite_add_col('posts', 'view_count', 'INTEGER NOT NULL DEFAULT 0')
+        except Exception: pass
+        # cube_bans: ip_hash + device_id (cross-account block)
+        try: _sqlite_add_col('cube_bans', 'ip_hash', 'TEXT DEFAULT NULL')
+        except Exception: pass
+        try: _sqlite_add_col('cube_bans', 'device_id', 'TEXT DEFAULT NULL')
         except Exception: pass
 
     # Performance indexes (both PG and SQLite)
@@ -1982,8 +1992,9 @@ def get_cube_banned_ids(cube_id: int) -> set:
     except Exception:
         return set()
 
-def ban_user_from_cube(cube_id: int, user_id: int, owner_id: int) -> bool:
-    """Ban user from cube. Returns True if cube exists and requester is owner."""
+def ban_user_from_cube(cube_id: int, user_id: int, owner_id: int,
+                       ip_hash: str = None, device_id: str = None) -> bool:
+    """Ban user from cube. Also stores ip_hash+device_id for cross-account block."""
     conn = get_db(); c = conn.cursor()
     c.execute(_q("SELECT owner_id FROM cubes WHERE id=?"), (cube_id,))
     row = c.fetchone()
@@ -1993,9 +2004,13 @@ def ban_user_from_cube(cube_id: int, user_id: int, owner_id: int) -> bool:
     if row_owner != owner_id:
         conn.close(); return False
     if _PG:
-        c.execute("INSERT INTO cube_bans(cube_id,user_id) VALUES(%s,%s) ON CONFLICT DO NOTHING", (cube_id, user_id))
+        c.execute("""INSERT INTO cube_bans(cube_id,user_id,ip_hash,device_id)
+                     VALUES(%s,%s,%s,%s) ON CONFLICT(cube_id,user_id)
+                     DO UPDATE SET ip_hash=EXCLUDED.ip_hash, device_id=EXCLUDED.device_id""",
+                  (cube_id, user_id, ip_hash, device_id))
     else:
-        c.execute("INSERT OR IGNORE INTO cube_bans(cube_id,user_id) VALUES(?,?)", (cube_id, user_id))
+        c.execute("""INSERT OR REPLACE INTO cube_bans(cube_id,user_id,ip_hash,device_id)
+                     VALUES(?,?,?,?)""", (cube_id, user_id, ip_hash, device_id))
     conn.commit(); conn.close()
     return True
 
@@ -2004,3 +2019,21 @@ def is_user_banned_from_cube(cube_id: int, user_id: int) -> bool:
     c.execute(_q("SELECT 1 FROM cube_bans WHERE cube_id=? AND user_id=?"), (cube_id, user_id))
     row = c.fetchone(); conn.close()
     return row is not None
+
+def is_device_banned_from_cube(cube_id: int, ip_hash: str = None, device_id: str = None) -> bool:
+    """Check if an IP or device fingerprint is banned from this cube (cross-account block)."""
+    if not ip_hash and not device_id:
+        return False
+    try:
+        conn = get_db(); c = conn.cursor()
+        if ip_hash and device_id:
+            c.execute(_q("SELECT 1 FROM cube_bans WHERE cube_id=? AND (ip_hash=? OR device_id=?)"),
+                      (cube_id, ip_hash, device_id))
+        elif ip_hash:
+            c.execute(_q("SELECT 1 FROM cube_bans WHERE cube_id=? AND ip_hash=?"), (cube_id, ip_hash))
+        else:
+            c.execute(_q("SELECT 1 FROM cube_bans WHERE cube_id=? AND device_id=?"), (cube_id, device_id))
+        row = c.fetchone(); conn.close()
+        return row is not None
+    except Exception:
+        return False
