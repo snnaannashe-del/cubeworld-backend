@@ -1215,32 +1215,34 @@ def get_cube_visitors(cube_id: int, limit: int = 100):
         return []
 
 def get_user_joined_cubes(user_id: int):
-    """Return all cubes a user has visited (for restoring joined cubes after logout/login)."""
+    """Return cubes the user joined via key (not owned, not banned, not expired)."""
     try:
         conn = get_db(); c = conn.cursor()
         if _PG:
             c.execute("""
-                SELECT cb.id, cb.name, cb.icon, cb.color, cb.type, cb.cube_key,
+                SELECT cb.id, cb.name, cb.icon, cb.color, cb.type,
                        CAST(EXTRACT(EPOCH FROM (cb.expires_at - NOW())) AS INTEGER) as life_left_seconds
                 FROM cube_visitors cv
                 JOIN cubes cb ON cb.id = cv.cube_id
                 WHERE cv.user_id = %s
                   AND cb.owner_id != %s
+                  AND cb.is_active = 1
                   AND (cb.expires_at IS NULL OR cb.expires_at > NOW())
-                  AND NOT EXISTS (SELECT 1 FROM cube_bans ban WHERE ban.cube_id = cb.id AND ban.user_id = %s)
+                  AND NOT EXISTS (SELECT 1 FROM cube_bans b WHERE b.cube_id=cb.id AND b.user_id=%s)
                 ORDER BY cv.last_visit DESC
                 LIMIT 100
             """, (user_id, user_id, user_id))
         else:
             c.execute("""
-                SELECT cb.id, cb.name, cb.icon, cb.color, cb.type, cb.cube_key,
+                SELECT cb.id, cb.name, cb.icon, cb.color, cb.type,
                        CAST((julianday(cb.expires_at) - julianday('now')) * 86400 AS INTEGER) as life_left_seconds
                 FROM cube_visitors cv
                 JOIN cubes cb ON cb.id = cv.cube_id
                 WHERE cv.user_id = ?
                   AND cb.owner_id != ?
+                  AND cb.is_active = 1
                   AND (cb.expires_at IS NULL OR cb.expires_at > datetime('now'))
-                  AND NOT EXISTS (SELECT 1 FROM cube_bans ban WHERE ban.cube_id = cb.id AND ban.user_id = ?)
+                  AND NOT EXISTS (SELECT 1 FROM cube_bans b WHERE b.cube_id=cb.id AND b.user_id=?)
                 ORDER BY cv.last_visit DESC
                 LIMIT 100
             """, (user_id, user_id, user_id))
