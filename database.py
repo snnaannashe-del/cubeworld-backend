@@ -198,6 +198,19 @@ def init_db():
             joined_at TIMESTAMP NOT NULL DEFAULT NOW(),
             PRIMARY KEY (group_id, user_id)
         )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS cube_bans (
+            cube_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            banned_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (cube_id, user_id)
+        )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS cube_visitors (
+            cube_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            display_name TEXT,
+            last_visit TIMESTAMP NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (cube_id, user_id)
+        )""")
         conn.commit()
         c.execute("""CREATE TABLE IF NOT EXISTS messages (
             id SERIAL PRIMARY KEY,
@@ -403,10 +416,15 @@ def init_db():
         _sqlite_add_col('users', 'username', 'TEXT UNIQUE')
         _sqlite_add_col('cubes', 'handle', 'TEXT UNIQUE')
         _sqlite_add_col('users', 'account_type', "TEXT NOT NULL DEFAULT 'public'")
-        _sqlite_add_col('groups', 'group_key', 'TEXT UNIQUE')
-        _sqlite_add_col('posts', 'post_type', "TEXT NOT NULL DEFAULT 'short'")
-        _sqlite_add_col('posts', 'image_url', 'TEXT')
-        _sqlite_add_col('posts', 'view_count', 'INTEGER NOT NULL DEFAULT 0')
+        # groups/posts may not exist yet on a fresh DB — safe to ignore, re-run after table creation
+        try: _sqlite_add_col('groups', 'group_key', 'TEXT UNIQUE')
+        except Exception: pass
+        try: _sqlite_add_col('posts', 'post_type', "TEXT NOT NULL DEFAULT 'short'")
+        except Exception: pass
+        try: _sqlite_add_col('posts', 'image_url', 'TEXT')
+        except Exception: pass
+        try: _sqlite_add_col('posts', 'view_count', 'INTEGER NOT NULL DEFAULT 0')
+        except Exception: pass
         conn.commit()
         c.execute("""CREATE TABLE IF NOT EXISTS groups (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -434,6 +452,19 @@ def init_db():
             user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             joined_at TEXT NOT NULL DEFAULT (datetime('now')),
             PRIMARY KEY (group_id, user_id)
+        )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS cube_bans (
+            cube_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            banned_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (cube_id, user_id)
+        )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS cube_visitors (
+            cube_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            display_name TEXT,
+            last_visit TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (cube_id, user_id)
         )""")
         conn.commit()
         c.execute("""CREATE TABLE IF NOT EXISTS messages (
@@ -579,6 +610,61 @@ def init_db():
         ]:
             try: c.execute(col_sql)
             except Exception: pass
+        # Re-run migrations for groups/posts now that tables exist
+        try: _sqlite_add_col('groups', 'group_key', 'TEXT UNIQUE')
+        except Exception: pass
+        try: _sqlite_add_col('posts', 'post_type', "TEXT NOT NULL DEFAULT 'short'")
+        except Exception: pass
+        try: _sqlite_add_col('posts', 'image_url', 'TEXT')
+        except Exception: pass
+        try: _sqlite_add_col('posts', 'view_count', 'INTEGER NOT NULL DEFAULT 0')
+        except Exception: pass
+
+    # Performance indexes (both PG and SQLite)
+    index_ddl = [
+        "CREATE INDEX IF NOT EXISTS idx_messages_cube_id ON messages(cube_id)",
+        "CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(cube_id, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_cubes_owner ON cubes(owner_id)",
+        "CREATE INDEX IF NOT EXISTS idx_cubes_active_expires ON cubes(is_active, expires_at)",
+        "CREATE INDEX IF NOT EXISTS idx_dm_from_to ON direct_messages(from_user_id, to_user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_dm_to ON direct_messages(to_user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_dm_created ON direct_messages(created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_posts_cube ON posts(cube_id)",
+        "CREATE INDEX IF NOT EXISTS idx_posts_created ON posts(created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_users_last_seen ON users(last_seen DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_signals_cube ON signals(cube_id)",
+    ]
+    for ddl in index_ddl:
+        try: c.execute(ddl)
+        except Exception: pass
+
+    # Backfill cube_visitors from messages table so kick-search works immediately
+    # (cube_visitors was added later; this runs on every startup but is idempotent)
+    try:
+        if _PG:
+            c.execute("""
+                INSERT INTO cube_visitors (cube_id, user_id, display_name, last_visit)
+                SELECT DISTINCT ON (m.cube_id, m.user_id)
+                       m.cube_id, m.user_id, u.display_name, m.created_at
+                FROM messages m
+                JOIN users u ON u.id = m.user_id
+                WHERE m.user_id IS NOT NULL AND u.is_active = 1
+                ORDER BY m.cube_id, m.user_id, m.created_at DESC
+                ON CONFLICT (cube_id, user_id) DO NOTHING
+            """)
+        else:
+            c.execute("""
+                INSERT OR IGNORE INTO cube_visitors (cube_id, user_id, display_name, last_visit)
+                SELECT m.cube_id, m.user_id, u.display_name, MAX(m.created_at)
+                FROM messages m
+                JOIN users u ON u.id = m.user_id
+                WHERE m.user_id IS NOT NULL AND u.is_active = 1
+                GROUP BY m.cube_id, m.user_id
+            """)
+    except Exception:
+        pass  # Non-fatal: messages table may not exist yet on fresh DB
 
     conn.commit()
     conn.close()
@@ -1071,6 +1157,84 @@ def deactivate_expired_cubes():
         c.execute("UPDATE cubes SET is_active=0 WHERE is_active=1 AND expires_at<=datetime('now')")
     conn.commit(); conn.close()
 
+def get_my_cubes(owner_id: int):
+    """Return ALL cubes owned by this user, including expired ones."""
+    conn = get_db(); c = conn.cursor()
+    if _PG:
+        c.execute("""SELECT id,owner_id,name,description,icon,color,type,life_hours,is_active,expires_at,cube_key,
+                            GREATEST(0, CAST(EXTRACT(EPOCH FROM (expires_at - NOW())) AS INTEGER)) as life_left_seconds
+                     FROM cubes WHERE owner_id=%s ORDER BY created_at DESC LIMIT 50""", (owner_id,))
+    else:
+        c.execute("""SELECT id,owner_id,name,description,icon,color,type,life_hours,is_active,expires_at,cube_key,
+                            MAX(0, CAST((julianday(expires_at)-julianday('now'))*86400 AS INTEGER)) as life_left_seconds
+                     FROM cubes WHERE owner_id=? ORDER BY created_at DESC LIMIT 50""", (owner_id,))
+    rows = c.fetchall()
+    conn.close(); return _fetchall(rows)
+
+def record_cube_visit(cube_id: int, user_id: int, display_name: str):
+    """Record that a user visited a cube (called on WS connect). Upserts last_visit."""
+    try:
+        conn = get_db(); c = conn.cursor()
+        if _PG:
+            c.execute("""INSERT INTO cube_visitors (cube_id, user_id, display_name, last_visit)
+                         VALUES (%s, %s, %s, NOW())
+                         ON CONFLICT (cube_id, user_id) DO UPDATE
+                           SET display_name=EXCLUDED.display_name, last_visit=NOW()""",
+                      (cube_id, user_id, display_name))
+        else:
+            c.execute("""INSERT INTO cube_visitors (cube_id, user_id, display_name, last_visit)
+                         VALUES (?, ?, ?, datetime('now'))
+                         ON CONFLICT (cube_id, user_id) DO UPDATE
+                           SET display_name=excluded.display_name, last_visit=datetime('now')""",
+                      (cube_id, user_id, display_name))
+        conn.commit(); conn.close()
+    except Exception:
+        pass  # Non-critical — never crash a WS connection
+
+def get_cube_visitors(cube_id: int, limit: int = 100):
+    """Return all users who ever visited this cube (persistent across server restarts)."""
+    try:
+        conn = get_db(); c = conn.cursor()
+        if _PG:
+            c.execute("""SELECT u.id, u.display_name, u.avatar_url, cv.last_visit
+                         FROM cube_visitors cv JOIN users u ON u.id = cv.user_id
+                         WHERE cv.cube_id = %s AND u.is_active = 1
+                         ORDER BY cv.last_visit DESC LIMIT %s""", (cube_id, limit))
+        else:
+            c.execute("""SELECT u.id, u.display_name, u.avatar_url, cv.last_visit
+                         FROM cube_visitors cv JOIN users u ON u.id = cv.user_id
+                         WHERE cv.cube_id = ? AND u.is_active = 1
+                         ORDER BY cv.last_visit DESC LIMIT ?""", (cube_id, limit))
+        rows = c.fetchall(); conn.close()
+        return _fetchall(rows)
+    except Exception:
+        return []
+
+def get_cube_message_senders(cube_id: int, limit: int = 50):
+    """Return distinct users who sent messages in this cube (recent participants for kick search)."""
+    conn = get_db(); c = conn.cursor()
+    if _PG:
+        c.execute("""
+            SELECT DISTINCT ON (u.id) u.id, u.display_name, u.avatar_url
+            FROM messages m JOIN users u ON u.id = m.user_id
+            WHERE m.cube_id = %s AND m.user_id IS NOT NULL
+              AND m.created_at >= NOW() - INTERVAL '90 days'
+            ORDER BY u.id, m.created_at DESC
+            LIMIT %s
+        """, (cube_id, limit))
+    else:
+        c.execute("""
+            SELECT u.id, u.display_name, u.avatar_url
+            FROM (
+                SELECT user_id, MAX(created_at) as last_msg
+                FROM messages WHERE cube_id=? AND user_id IS NOT NULL
+                  AND created_at >= datetime('now', '-90 days')
+                GROUP BY user_id ORDER BY last_msg DESC LIMIT ?
+            ) m JOIN users u ON u.id = m.user_id
+        """, (cube_id, limit))
+    rows = c.fetchall(); conn.close()
+    return _fetchall(rows)
+
 def list_cubes():
     conn = get_db(); c = conn.cursor()
     if _PG:
@@ -1291,7 +1455,10 @@ def like_post(post_id, user_id):
     exists = c.fetchone()
     if exists:
         c.execute(_q("DELETE FROM post_likes WHERE post_id=? AND user_id=?"), (post_id, user_id))
-        c.execute(_q("UPDATE posts SET likes=MAX(0,likes-1) WHERE id=?"), (post_id,))
+        if _PG:
+            c.execute("UPDATE posts SET likes=GREATEST(0,likes-1) WHERE id=%s", (post_id,))
+        else:
+            c.execute("UPDATE posts SET likes=MAX(0,likes-1) WHERE id=?", (post_id,))
         liked = False
     else:
         try:
@@ -1501,12 +1668,17 @@ def activate_premium(user_id, months=1, payment_method=None, tx_hash=None):
     if _PG:
         c.execute("""SELECT NOW() + (%s || ' months')::INTERVAL AS exp""", (str(months),))
         expires = dict(c.fetchone())["exp"]
-        c.execute("""INSERT INTO premium_subscriptions (user_id,expires_at,price_usd,payment_method,tx_hash,status)
-                     VALUES (%s,%s,%s,%s,%s,'active')
-                     ON CONFLICT (user_id) DO UPDATE
-                       SET expires_at=EXCLUDED.expires_at, price_usd=EXCLUDED.price_usd,
-                           payment_method=EXCLUDED.payment_method, tx_hash=EXCLUDED.tx_hash, status='active'""",
-                  (user_id, expires, 6.99*months, payment_method, tx_hash))
+        # No UNIQUE(user_id) on premium_subscriptions — use SELECT then INSERT/UPDATE
+        c.execute("SELECT id FROM premium_subscriptions WHERE user_id=%s ORDER BY id DESC LIMIT 1", (user_id,))
+        existing = c.fetchone()
+        if existing:
+            c.execute("""UPDATE premium_subscriptions SET expires_at=%s, price_usd=%s,
+                             payment_method=%s, tx_hash=%s, status='active' WHERE id=%s""",
+                      (expires, 6.99*months, payment_method, tx_hash, dict(existing)["id"]))
+        else:
+            c.execute("""INSERT INTO premium_subscriptions (user_id,expires_at,price_usd,payment_method,tx_hash,status)
+                         VALUES (%s,%s,%s,%s,%s,'active')""",
+                      (user_id, expires, 6.99*months, payment_method, tx_hash))
         c.execute("UPDATE users SET key_type='premium', premium_expires_at=%s WHERE id=%s",
                   (str(expires), user_id))
     else:
@@ -1758,3 +1930,26 @@ def get_group_members(group_id: int, limit: int = 50):
                      WHERE gm.group_id=? ORDER BY gm.joined_at DESC LIMIT ?""", (group_id, limit))
     rows = _fetchall(c.fetchall()); conn.close()
     return rows
+
+def ban_user_from_cube(cube_id: int, user_id: int, owner_id: int) -> bool:
+    """Ban user from cube. Returns True if cube exists and requester is owner."""
+    conn = get_db(); c = conn.cursor()
+    c.execute(_q("SELECT owner_id FROM cubes WHERE id=?"), (cube_id,))
+    row = c.fetchone()
+    if not row:
+        conn.close(); return False
+    row_owner = row['owner_id'] if _PG else row[0]
+    if row_owner != owner_id:
+        conn.close(); return False
+    if _PG:
+        c.execute("INSERT INTO cube_bans(cube_id,user_id) VALUES(%s,%s) ON CONFLICT DO NOTHING", (cube_id, user_id))
+    else:
+        c.execute("INSERT OR IGNORE INTO cube_bans(cube_id,user_id) VALUES(?,?)", (cube_id, user_id))
+    conn.commit(); conn.close()
+    return True
+
+def is_user_banned_from_cube(cube_id: int, user_id: int) -> bool:
+    conn = get_db(); c = conn.cursor()
+    c.execute(_q("SELECT 1 FROM cube_bans WHERE cube_id=? AND user_id=?"), (cube_id, user_id))
+    row = c.fetchone(); conn.close()
+    return row is not None
