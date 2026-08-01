@@ -785,9 +785,25 @@ async def kick_user_from_cube(cube_id: int, request: Request, user=Depends(get_c
     row_owner = row["owner_id"] if db._PG else row[0]
     if int(row_owner) != int(user["id"]):
         raise HTTPException(403, "Вы не владелец куба")
-    # Record ban (ignore if already banned)
+    # Gather kicked user's IP hash and device_id for cross-account block
+    kicked_ip_hash = None
+    kicked_device_id = None
     try:
-        db.ban_user_from_cube(cube_id, target_uid, int(user["id"]))
+        # If kicked user is in the cube room, grab their IP from sessions
+        import hashlib
+        kicked_ip = None
+        if str(cube_id) in cube_rooms and str(target_uid) in cube_rooms[str(cube_id)]:
+            room_info = cube_rooms[str(cube_id)][str(target_uid)]
+            kicked_ip = room_info.get("ip")
+            kicked_device_id = room_info.get("device_id")
+        if kicked_ip:
+            kicked_ip_hash = hashlib.sha256(kicked_ip.encode()).hexdigest()[:16]
+    except Exception:
+        pass
+    # Record ban with IP hash + device_id for cross-account blocking
+    try:
+        db.ban_user_from_cube(cube_id, target_uid, int(user["id"]),
+                              ip_hash=kicked_ip_hash, device_id=kicked_device_id)
     except Exception:
         pass
     # Get cube name for notification
@@ -854,18 +870,35 @@ async def get_cube_memberships(user=Depends(get_current_user)):
 @app.post("/cubes/join")
 async def join_cube_by_key(body: JoinCubeRequest, request: Request):
     """Resolve a cube invite key — returns cube info if valid. Records membership if authenticated."""
+    import hashlib
     key = body.cube_key.strip().upper()
     cube = db.get_cube_by_key(key)
     if not cube:
         raise HTTPException(status_code=404, detail="Ключ не найден или куб истёк")
+
+    # Get IP hash and device_id for cross-account ban check
+    client_ip = request.headers.get("X-Forwarded-For", request.client.host if request.client else "")
+    client_ip = client_ip.split(",")[0].strip()
+    ip_hash = hashlib.sha256(client_ip.encode()).hexdigest()[:16] if client_ip else None
+    device_id = request.headers.get("X-Device-Id", "")[:64] or None
+
+    # Check if this IP or device is banned from this cube (cross-account ban)
+    if db.is_device_banned_from_cube(cube["id"], ip_hash=ip_hash, device_id=device_id):
+        raise HTTPException(status_code=403, detail="Ключ недействителен для вашего устройства")
+
     # Record membership in cube_visitors immediately (so it survives logout/login)
     try:
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             payload = jwt.decode(auth_header[7:], SECRET_KEY, algorithms=[JWT_ALG])
             user_id = int(payload["sub"])
+            # Also check user-level ban
+            if db.is_user_banned_from_cube(cube["id"], user_id):
+                raise HTTPException(status_code=403, detail="Ключ недействителен для вашего устройства")
             display_name = db.get_display_name(user_id) or "User"
             db.record_cube_visit(cube["id"], user_id, display_name)
+    except HTTPException:
+        raise
     except Exception:
         pass
     return {
@@ -1161,9 +1194,24 @@ async def ws_cube(websocket: WebSocket, token: str, cube_id: str):
             await websocket.close(code=4003)
             return
 
+        # Also check IP/device ban (cross-account block)
+        import hashlib
+        ws_client_ip = websocket.headers.get("x-forwarded-for", "")
+        ws_client_ip = ws_client_ip.split(",")[0].strip() if ws_client_ip else (
+            websocket.client.host if websocket.client else "")
+        ws_ip_hash = hashlib.sha256(ws_client_ip.encode()).hexdigest()[:16] if ws_client_ip else None
+        ws_device_id = (websocket.headers.get("x-device-id", "") or "")[:64] or None
+        if cube_id.isdigit() and db.is_device_banned_from_cube(int(cube_id), ip_hash=ws_ip_hash, device_id=ws_device_id):
+            await websocket.send_json({"type":"kicked","reason":"banned"})
+            await websocket.close(code=4003)
+            return
+
         if cube_id not in cube_rooms:
             cube_rooms[cube_id] = {}
-        cube_rooms[cube_id][user_id] = {"ws": websocket, "display_name": display_name}
+        cube_rooms[cube_id][user_id] = {
+            "ws": websocket, "display_name": display_name,
+            "ip": ws_client_ip, "device_id": ws_device_id  # stored for kick → ban
+        }
         user_ws[user_id] = websocket  # track cube WS (for cube-specific sends)
         # NOTE: global_user_ws is NOT updated here — it's managed only by /ws/{token}
         # Persist visit so kick-search works even after server restart
