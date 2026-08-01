@@ -256,11 +256,6 @@ async def get_my_cubes(user=Depends(get_current_user)):
     """Return all cubes owned by the current user (including expired/inactive)."""
     return db.get_my_cubes(int(user["id"]))
 
-@app.get("/me/cube-memberships")
-async def get_cube_memberships(user=Depends(get_current_user)):
-    """Return all cubes the user has joined (visited) — used to restore world after logout/login."""
-    return db.get_user_joined_cubes(int(user["id"]))
-
 @app.patch("/me")
 async def update_me(body: UpdateProfileRequest, user=Depends(get_current_user)):
     db.update_profile(user["id"], body.display_name, body.avatar_url)
@@ -765,20 +760,12 @@ async def kick_user_from_cube(cube_id: int, request: Request, user=Depends(get_c
         db.ban_user_from_cube(cube_id, target_uid, int(user["id"]))
     except Exception:
         pass
-    # Kick via WebSocket — cube-room first, then global WS fallback
+    # Kick via WebSocket if online
     cube_id_str = str(cube_id)
-    kick_msg = {"type": "kicked", "cube_id": cube_id}
     if cube_id_str in cube_rooms and str(target_uid) in cube_rooms[cube_id_str]:
         try:
-            await cube_rooms[cube_id_str][str(target_uid)]["ws"].send_json(kick_msg)
+            await cube_rooms[cube_id_str][str(target_uid)]["ws"].send_json({"type":"kicked"})
             await cube_rooms[cube_id_str][str(target_uid)]["ws"].close(code=4003)
-        except Exception:
-            pass
-    # Always also try global WS (user may be in world view, not inside cube)
-    gws = user_ws.get(str(target_uid))
-    if gws:
-        try:
-            await gws.send_json(kick_msg)
         except Exception:
             pass
     return {"ok": True}
@@ -814,6 +801,11 @@ async def get_cube_online_members(cube_id: int, user=Depends(get_current_user)):
         pass
     return list(seen.values())
 
+@app.get("/me/cube-memberships")
+async def get_cube_memberships(user=Depends(get_current_user)):
+    """Return cubes the user joined via key — used to restore world after logout/login."""
+    return db.get_user_joined_cubes(int(user["id"]))
+
 @app.post("/cubes/join")
 async def join_cube_by_key(body: JoinCubeRequest, request: Request):
     """Resolve a cube invite key — returns cube info if valid. Records membership if authenticated."""
@@ -821,7 +813,7 @@ async def join_cube_by_key(body: JoinCubeRequest, request: Request):
     cube = db.get_cube_by_key(key)
     if not cube:
         raise HTTPException(status_code=404, detail="Ключ не найден или куб истёк")
-    # Record membership if user is authenticated (optional — join still works without token)
+    # Record membership in cube_visitors immediately (so it survives logout/login)
     try:
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
