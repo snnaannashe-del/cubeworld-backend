@@ -723,7 +723,7 @@ async def list_cubes():
 async def create_cube(body: CreateCubeRequest, user=Depends(get_current_user)):
     name      = body.name.strip()[:50] or "My Cube"
     desc      = body.description[:200]
-    icon      = body.icon[:8]
+    icon      = body.icon[:65536]  # allow full base64 photo (64×64 JPEG ≈ 4KB)
     color     = body.color[:20]
     ctype     = "public" if body.type == "public" else "private"
     life_h    = max(1, min(body.life_hours, 8760))
