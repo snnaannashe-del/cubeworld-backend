@@ -179,39 +179,43 @@ class UniverseRequest(BaseModel):
 
 @app.post("/auth/generate")
 async def generate_key(request: Request):
+    # Lazily clean up expired pending keys on each generate call
+    try: db.cleanup_expired_pending_keys()
+    except Exception: pass
+
     for _ in range(10):
         raw_key = generate_cube_key()
         key_hash = db.hash_key(raw_key)
-        if not db.get_user_by_key_hash(key_hash):
+        if not db.get_user_by_key_hash(key_hash) and not db.get_pending_key_by_hash(key_hash):
             break
     else:
         raise HTTPException(500, "Key generation failed")
 
     key_prefix = raw_key[:9]
-    user_id = db.create_user(key_hash, key_prefix, key_type="free")
-    db.add_cube_balance(user_id, 100.0, "mint", description="Welcome bonus")
-
-    access_token = create_access_token(user_id, "free")
-    refresh_raw   = create_refresh_token()
-    refresh_hash  = db.hash_token(refresh_raw)
-    expires_at    = (datetime.utcnow() + timedelta(days=REFRESH_TTL)).strftime("%Y-%m-%d %H:%M:%S")
-
-    ua      = request.headers.get("user-agent", "")
-    ip_raw  = request.client.host if request.client else ""
-    ip_hash = hashlib.sha256(ip_raw.encode()).hexdigest() if ip_raw else None
-    db.create_session(user_id, refresh_hash, expires_at, user_agent=ua, ip_hash=ip_hash)
+    # Store as pending — user is NOT created until first entry into CubeWorld
+    db.create_pending_key(key_hash, key_prefix, key_type="free")
 
     return {"key": raw_key, "key_prefix": key_prefix, "key_type": "free",
-            "access_token": access_token, "refresh_token": refresh_raw,
-            "cube_balance": 100.0, "message": "Save your key - it cannot be recovered!"}
+            "message": "Save your key - it cannot be recovered!"}
 
 @app.post("/auth/login")
 async def login_with_key(body: LoginRequest, request: Request):
     raw_key  = body.key.strip().upper()
     key_hash = db.hash_key(raw_key)
     user     = db.get_user_by_key_hash(key_hash)
+
+    # First entry: key was pending (never entered CubeWorld before)
     if not user:
-        raise HTTPException(401, "Key not found or invalid")
+        pending = db.get_pending_key_by_hash(key_hash)
+        if not pending:
+            raise HTTPException(401, "Key not found, invalid, or expired")
+        # Activate: create real user, give welcome bonus, remove from pending
+        key_prefix = pending["key_prefix"]
+        key_type_p = pending["key_type"]
+        user_id_new = db.create_user(key_hash, key_prefix, key_type=key_type_p)
+        db.add_cube_balance(user_id_new, 100.0, "mint", description="Welcome bonus")
+        db.consume_pending_key(key_hash)
+        user = db.get_user_by_id(user_id_new)
 
     user_id   = user["id"]
     key_type  = user["key_type"]
