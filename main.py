@@ -1065,6 +1065,14 @@ async def like_feed_post(post_id: int, user=Depends(get_current_user)):
     likes, liked = db.like_post(post_id, user["id"])
     return {"likes": likes, "liked": liked, "ok": True}
 
+@app.post("/feed/{post_id}/dislike")
+async def dislike_feed_post(post_id: int, user=Depends(get_current_user)):
+    return {"ok": True, "post_id": post_id}
+
+@app.post("/feed/{post_id}/fire")
+async def fire_feed_post(post_id: int, user=Depends(get_current_user)):
+    return {"ok": True, "post_id": post_id}
+
 @app.get("/feed/{post_id}/comments")
 async def get_feed_comments(post_id: int):
     return db.get_post_comments(post_id)
