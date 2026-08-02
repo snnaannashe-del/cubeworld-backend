@@ -172,6 +172,9 @@ class SendDmRequest(BaseModel):
     file_size: Optional[str] = None
     file_url: Optional[str] = None
 
+class UniverseRequest(BaseModel):
+    universe: list = []
+
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
 @app.post("/auth/generate")
@@ -274,6 +277,18 @@ async def create_signal_standalone(body: CreateSignalRequest, user=Depends(get_c
         return {"ok": True, "id": sid}
     except Exception:
         return {"ok": False}
+
+@app.get("/me/universe")
+async def get_universe(user=Depends(get_current_user)):
+    """Return the user's saved universe (list of cube IDs)."""
+    uni = db.get_universe(int(user["id"]))
+    return {"universe": uni}
+
+@app.post("/me/universe")
+async def save_universe(body: UniverseRequest, user=Depends(get_current_user)):
+    """Save the user's universe selection."""
+    db.save_universe(int(user["id"]), [str(x) for x in body.universe])
+    return {"ok": True}
 
 @app.post("/me/username")
 async def set_username(body: SetUsernameRequest, user=Depends(get_current_user)):
