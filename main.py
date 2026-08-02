@@ -739,6 +739,26 @@ async def delete_all_user_cubes(secret: str = ""):
     deleted = db.delete_all_user_cubes()
     return {"ok": True, "deleted": deleted}
 
+class UpdateCubeIconRequest(BaseModel):
+    icon: str = ""
+
+@app.patch("/cubes/{cube_id}/icon")
+async def update_cube_icon(cube_id: int, body: UpdateCubeIconRequest, user=Depends(get_current_user)):
+    """Owner: update cube icon (e.g. fix truncated base64 from old bug)."""
+    icon = body.icon[:65536]
+    conn = db.get_db(); c = conn.cursor()
+    try:
+        c.execute(db._q("UPDATE cubes SET icon=? WHERE id=? AND owner_id=?"), (icon, cube_id, user["id"]))
+        if c.rowcount == 0:
+            conn.close(); raise HTTPException(status_code=403, detail="Только создатель может обновить иконку")
+        conn.commit(); conn.close()
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        if db._PG: conn.rollback()
+        conn.close(); raise HTTPException(status_code=500, detail=str(e))
+
 @app.delete("/cubes/{cube_id}")
 async def delete_cube(cube_id: int, user=Depends(get_current_user)):
     # Get cube name and all visitors BEFORE deleting (so we can notify them)
