@@ -1164,6 +1164,34 @@ async def admin_upgrade(request: Request):
     db.upgrade_key(int(user_id), to_type, cube_spent=0.0)
     return {"ok": True, "user_id": user_id, "key_type": to_type}
 
+
+# ── Prices proxy (server-side CoinGecko cache — prevents per-user rate limits) ─
+_prices_cache: dict = {}
+_prices_ts: float = 0.0
+_PRICES_TTL = 30  # seconds
+_CG_IDS = "bitcoin,ethereum,tether,binancecoin,solana,ripple,dogecoin,cardano,tron,avalanche-2,shiba-inu,polkadot,chainlink,toncoin,bitcoin-cash,litecoin,near,uniswap,matic-network,stellar,pepe,arbitrum,aptos,sui,optimism,injective-protocol,cosmos,filecoin,vechain,notcoin"
+
+@app.get("/prices")
+async def get_prices():
+    global _prices_cache, _prices_ts
+    now = datetime.utcnow().timestamp()
+    if _prices_cache and (now - _prices_ts) < _PRICES_TTL:
+        return _prices_cache
+    try:
+        url = "https://api.coingecko.com/api/v3/simple/price?ids=" + _CG_IDS + "&vs_currencies=usd&include_24hr_change=true"
+        async with httpx.AsyncClient(timeout=10, headers={"accept": "application/json"}) as client:
+            r = await client.get(url)
+            r.raise_for_status()
+            data = r.json()
+            if len(data) > 5:
+                _prices_cache = data
+                _prices_ts = now
+    except Exception:
+        pass
+    if _prices_cache:
+        return _prices_cache
+    raise HTTPException(503, "Price feed unavailable")
+
 @app.get("/stats")
 async def stats():
     s = db.get_stats()
