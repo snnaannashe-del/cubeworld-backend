@@ -153,6 +153,7 @@ def init_db():
             ('users', 'username', 'TEXT UNIQUE'),
             ('cubes', 'handle', 'TEXT UNIQUE'),
             ('users', 'account_type', "TEXT NOT NULL DEFAULT 'public'"),
+            ('users', 'my_universe', "TEXT NOT NULL DEFAULT '[]'"),
         ]:
             c.execute("""SELECT column_name FROM information_schema.columns
                          WHERE table_name=%s AND column_name=%s""", (tbl, col))
@@ -364,7 +365,8 @@ def init_db():
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             last_seen TEXT NOT NULL DEFAULT (datetime('now')),
             is_active INTEGER NOT NULL DEFAULT 1,
-            account_type TEXT NOT NULL DEFAULT 'public'
+            account_type TEXT NOT NULL DEFAULT 'public',
+            my_universe TEXT NOT NULL DEFAULT '[]'
         )""")
         c.execute("""CREATE TABLE IF NOT EXISTS sessions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -424,6 +426,7 @@ def init_db():
         _sqlite_add_col('users', 'username', 'TEXT UNIQUE')
         _sqlite_add_col('cubes', 'handle', 'TEXT UNIQUE')
         _sqlite_add_col('users', 'account_type', "TEXT NOT NULL DEFAULT 'public'")
+        _sqlite_add_col('users', 'my_universe', "TEXT NOT NULL DEFAULT '[]'")
         # groups/posts may not exist yet on a fresh DB — safe to ignore, re-run after table creation
         try: _sqlite_add_col('groups', 'group_key', 'TEXT UNIQUE')
         except Exception: pass
@@ -989,6 +992,32 @@ def set_group_handle(group_id: int, owner_id: int, handle: str):
     try:
         c.execute(_q("UPDATE groups SET handle=? WHERE id=? AND owner_id=?"),
                   (handle.lower(), group_id, owner_id))
+        conn.commit(); conn.close(); return True
+    except Exception:
+        if _PG: conn.rollback()
+        conn.close(); return False
+
+def get_universe(user_id: int) -> list:
+    """Get user's saved universe (list of cube IDs)."""
+    import json
+    conn = get_db(); c = conn.cursor()
+    try:
+        c.execute(_q("SELECT my_universe FROM users WHERE id=?"), (user_id,))
+        row = c.fetchone(); conn.close()
+        if row:
+            val = dict(row).get('my_universe') or '[]'
+            try: return json.loads(val)
+            except: return []
+        return []
+    except Exception:
+        conn.close(); return []
+
+def save_universe(user_id: int, universe: list):
+    """Save user's universe (list of cube ID strings)."""
+    import json
+    conn = get_db(); c = conn.cursor()
+    try:
+        c.execute(_q("UPDATE users SET my_universe=? WHERE id=?"), (json.dumps(universe), user_id))
         conn.commit(); conn.close(); return True
     except Exception:
         if _PG: conn.rollback()
