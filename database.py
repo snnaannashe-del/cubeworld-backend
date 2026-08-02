@@ -350,6 +350,15 @@ def init_db():
             paid_at TIMESTAMP,
             UNIQUE(user_id, month)
         )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS pending_keys (
+            id SERIAL PRIMARY KEY,
+            key_hash TEXT NOT NULL UNIQUE,
+            key_prefix TEXT NOT NULL,
+            key_type TEXT NOT NULL DEFAULT 'free',
+            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            expires_at TIMESTAMP NOT NULL
+        )""")
+        conn.commit()
     else:
         # SQLite schema (original)
         c.execute("""CREATE TABLE IF NOT EXISTS users (
@@ -640,6 +649,14 @@ def init_db():
         except Exception: pass
         try: _sqlite_add_col('cube_bans', 'device_id', 'TEXT DEFAULT NULL')
         except Exception: pass
+        c.execute("""CREATE TABLE IF NOT EXISTS pending_keys (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            key_hash TEXT NOT NULL UNIQUE,
+            key_prefix TEXT NOT NULL,
+            key_type TEXT NOT NULL DEFAULT 'free',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            expires_at TEXT NOT NULL
+        )""")
 
     # Performance indexes (both PG and SQLite)
     index_ddl = [
@@ -695,6 +712,37 @@ def init_db():
 
 def hash_key(raw_key):
     return hashlib.sha256(raw_key.encode()).hexdigest()
+
+# ── Pending keys (not-yet-activated keys) ─────────────────────────────────────
+
+def create_pending_key(key_hash, key_prefix, key_type="free"):
+    conn = get_db(); c = conn.cursor()
+    if _PG:
+        c.execute("INSERT INTO pending_keys (key_hash,key_prefix,key_type,expires_at) VALUES (%s,%s,%s,NOW()+INTERVAL '24 hours')", (key_hash, key_prefix, key_type))
+    else:
+        c.execute("INSERT INTO pending_keys (key_hash,key_prefix,key_type,expires_at) VALUES (?,?,?,datetime('now','+24 hours'))", (key_hash, key_prefix, key_type))
+    conn.commit(); conn.close()
+
+def get_pending_key_by_hash(key_hash):
+    conn = get_db(); c = conn.cursor()
+    if _PG:
+        c.execute(_q("SELECT * FROM pending_keys WHERE key_hash=? AND expires_at>NOW()"), (key_hash,))
+    else:
+        c.execute("SELECT * FROM pending_keys WHERE key_hash=? AND expires_at>datetime('now')", (key_hash,))
+    row = _row(c.fetchone()); conn.close(); return row
+
+def consume_pending_key(key_hash):
+    conn = get_db(); c = conn.cursor()
+    c.execute(_q("DELETE FROM pending_keys WHERE key_hash=?"), (key_hash,))
+    conn.commit(); conn.close()
+
+def cleanup_expired_pending_keys():
+    conn = get_db(); c = conn.cursor()
+    if _PG:
+        c.execute("DELETE FROM pending_keys WHERE expires_at<=NOW()")
+    else:
+        c.execute("DELETE FROM pending_keys WHERE expires_at<=datetime('now')")
+    conn.commit(); conn.close()
 
 def hash_token(token):
     return hashlib.sha256(token.encode()).hexdigest()
