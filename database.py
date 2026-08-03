@@ -1631,6 +1631,16 @@ def _ensure_post_columns(conn):
         except Exception: pass
     conn.commit()
 
+def get_user_profile(uid):
+    conn = get_db(); c = conn.cursor()
+    sql = _q("SELECT id, display_name, avatar_url, username, account_type FROM users WHERE id = ?")
+    c.execute(sql, (str(uid),))
+    row = c.fetchone(); conn.close()
+    if not row: return None
+    keys = ['id','display_name','avatar_url','username','account_type']
+    return dict(zip(keys, row))
+
+
 def get_user_feed(uid, limit=30):
     conn = get_db(); _ensure_post_columns(conn); c = conn.cursor()
     sql = _q("SELECT * FROM posts WHERE user_id = ? ORDER BY created_at DESC LIMIT ?")
