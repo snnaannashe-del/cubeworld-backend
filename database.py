@@ -1631,6 +1631,14 @@ def _ensure_post_columns(conn):
         except Exception: pass
     conn.commit()
 
+def get_user_feed(uid, limit=30):
+    conn = get_db(); _ensure_post_columns(conn); c = conn.cursor()
+    sql = _q("SELECT * FROM posts WHERE user_id = ? ORDER BY created_at DESC LIMIT ?")
+    c.execute(sql, (str(uid), limit))
+    rows = _fetchall(c.fetchall()); conn.close()
+    return rows
+
+
 def get_global_feed(limit=30, offset=0):
     import json as _json
     conn = get_db(); _ensure_post_columns(conn); c = conn.cursor()
