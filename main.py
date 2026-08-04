@@ -1021,7 +1021,7 @@ async def delete_feed_post(post_id: int, user=Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Post not found or not yours")
     return {"ok": True, "deleted_id": post_id}
 
-@app.delete("/admin/feed/videos")
+@app.get("/admin/feed/videos/purge")
 async def admin_delete_video_posts(secret: str = ""):
     if secret != "cw-admin-reset-2025":
         raise HTTPException(status_code=403, detail="Forbidden")
