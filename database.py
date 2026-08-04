@@ -2164,9 +2164,9 @@ def admin_delete_video_posts() -> int:
     try:
         c = conn.cursor()
         if _PG:
-            c.execute("DELETE FROM posts WHERE video_url IS NOT NULL AND video_url <> ''")
+            c.execute("DELETE FROM posts WHERE (video_url IS NOT NULL AND video_url <> '') OR post_type='short'")
         else:
-            c.execute("DELETE FROM posts WHERE video_url IS NOT NULL AND video_url != ''")
+            c.execute("DELETE FROM posts WHERE (video_url IS NOT NULL AND video_url != '') OR post_type='short'")
         deleted = c.rowcount
         conn.commit()
         return deleted
