@@ -2145,15 +2145,15 @@ def delete_feed_post(post_id: int, user_id: int) -> bool:
     try:
         c = conn.cursor()
         if _PG:
-            c.execute("SELECT id FROM feed_posts WHERE id=%s AND user_id=%s", (post_id, user_id))
+            c.execute("SELECT id FROM posts WHERE id=%s AND user_id=%s", (post_id, user_id))
         else:
-            c.execute("SELECT id FROM feed_posts WHERE id=? AND user_id=?", (post_id, user_id))
+            c.execute("SELECT id FROM posts WHERE id=? AND user_id=?", (post_id, user_id))
         if not c.fetchone():
             return False
         if _PG:
-            c.execute("DELETE FROM feed_posts WHERE id=%s", (post_id,))
+            c.execute("DELETE FROM posts WHERE id=%s", (post_id,))
         else:
-            c.execute("DELETE FROM feed_posts WHERE id=?", (post_id,))
+            c.execute("DELETE FROM posts WHERE id=?", (post_id,))
         conn.commit()
         return True
     finally:
@@ -2164,9 +2164,9 @@ def admin_delete_video_posts() -> int:
     try:
         c = conn.cursor()
         if _PG:
-            c.execute("DELETE FROM feed_posts WHERE video_url IS NOT NULL AND video_url <> ''")
+            c.execute("DELETE FROM posts WHERE video_url IS NOT NULL AND video_url <> ''")
         else:
-            c.execute("DELETE FROM feed_posts WHERE video_url IS NOT NULL AND video_url != ''")
+            c.execute("DELETE FROM posts WHERE video_url IS NOT NULL AND video_url != ''")
         deleted = c.rowcount
         conn.commit()
         return deleted
