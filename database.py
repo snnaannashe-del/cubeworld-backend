@@ -2138,3 +2138,37 @@ def is_device_banned_from_cube(cube_id: int, ip_hash: str = None, device_id: str
         return row is not None
     except Exception:
         return False
+
+
+def delete_feed_post(post_id: int, user_id: int) -> bool:
+    conn = _get_conn()
+    try:
+        c = conn.cursor()
+        if IS_PG:
+            c.execute("SELECT id FROM feed_posts WHERE id=%s AND user_id=%s", (post_id, user_id))
+        else:
+            c.execute("SELECT id FROM feed_posts WHERE id=? AND user_id=?", (post_id, user_id))
+        if not c.fetchone():
+            return False
+        if IS_PG:
+            c.execute("DELETE FROM feed_posts WHERE id=%s", (post_id,))
+        else:
+            c.execute("DELETE FROM feed_posts WHERE id=?", (post_id,))
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+def admin_delete_video_posts() -> int:
+    conn = _get_conn()
+    try:
+        c = conn.cursor()
+        if IS_PG:
+            c.execute("DELETE FROM feed_posts WHERE video_url IS NOT NULL AND video_url <> ''")
+        else:
+            c.execute("DELETE FROM feed_posts WHERE video_url IS NOT NULL AND video_url != ''")
+        deleted = c.rowcount
+        conn.commit()
+        return deleted
+    finally:
+        conn.close()
