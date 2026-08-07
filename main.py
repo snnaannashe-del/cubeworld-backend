@@ -1100,8 +1100,17 @@ async def fire_feed_post(post_id: int, user=Depends(get_current_user)):
     return {"ok": True, "post_id": post_id}
 
 @app.get("/feed/{post_id}/comments")
-async def get_feed_comments(post_id: int):
-    return db.get_post_comments(post_id)
+async def get_feed_comments(post_id: int, request: Request):
+    user_id = None
+    try:
+        auth = request.headers.get("Authorization","")
+        if auth.startswith("Bearer "):
+            import jose.jwt as _jwt
+            payload = _jwt.decode(auth[7:], SECRET_KEY, algorithms=["HS256"])
+            user_id = payload.get("sub")
+    except Exception:
+        pass
+    return db.get_post_comments(post_id, user_id=user_id)
 
 @app.post("/feed/{post_id}/comment")
 async def add_feed_comment(post_id: int, body: AddCommentRequest, user=Depends(get_current_user)):
@@ -1139,7 +1148,37 @@ async def get_follow_status(target_id: int, user=Depends(get_current_user)):
     return {"following": following, **counts}
 
 @app.post("/follow/{target_id}")
-async def follow(target_id: int, user=Depends(get_current_user)):
+async def follow(target_id: int, user=Depends(get_curren
+
+class EditReplyRequest(BaseModel):
+    content: str
+
+@app.post("/feed/{post_id}/comment/{cid}/reply/{rid}/like")
+async def like_reply(post_id: int, cid: int, rid: int, body: CommentLikeRequest, user=Depends(get_current_user)):
+    if body.type not in ("like", "dislike"):
+        raise HTTPException(400, "Invalid type")
+    return db.toggle_reply_like(rid, user["id"], body.type)
+
+@app.delete("/feed/{post_id}/comment/{cid}/reply/{rid}")
+async def delete_reply(post_id: int, cid: int, rid: int, user=Depends(get_current_user)):
+    result = db.delete_comment_reply(rid, user["id"])
+    if isinstance(result, dict) and result.get("error") == "forbidden":
+        raise HTTPException(403, "Not your reply")
+    if isinstance(result, dict) and result.get("error") == "not found":
+        raise HTTPException(404, "Reply not found")
+    return result
+
+@app.put("/feed/{post_id}/comment/{cid}/reply/{rid}")
+async def edit_reply(post_id: int, cid: int, rid: int, body: EditReplyRequest, user=Depends(get_current_user)):
+    content = (body.content or "").strip()[:500]
+    if not content:
+        raise HTTPException(400, "Content required")
+    result = db.edit_comment_reply(rid, user["id"], content)
+    if isinstance(result, dict) and result.get("error") == "forbidden":
+        raise HTTPException(403, "Not your reply")
+    if isinstance(result, dict) and result.get("error") == "not found":
+        raise HTTPException(404, "Reply not found")
+    return resultt_user)):
     ok = db.follow_user(user["id"], target_id)
     counts = db.get_follow_counts(target_id)
     return {"ok": ok, "following": True, **counts}
