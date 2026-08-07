@@ -1717,32 +1717,38 @@ def get_post_comments(post_id, limit=100, user_id=None):
     for row in rows:
         cm = _row(row)
         cid = cm['id']
-        c.execute(_q("SELECT COUNT(*) FROM comment_likes WHERE comment_id=? AND type='like'"), (cid,))
-        lr = c.fetchone(); cm['likes'] = lr[0] if lr else 0
-        c.execute(_q("SELECT COUNT(*) FROM comment_likes WHERE comment_id=? AND type='dislike'"), (cid,))
-        dr = c.fetchone(); cm['dislikes'] = dr[0] if dr else 0
-        if uid:
-            c.execute(_q("SELECT type FROM comment_likes WHERE comment_id=? AND user_id=?"), (cid, uid))
-            ur = c.fetchone()
-            cm['user_like'] = (ur[0] if not hasattr(ur,'keys') else ur['type']) if ur else None
-        else:
-            cm['user_like'] = None
+        try:
+            c.execute(_q("SELECT COUNT(*) FROM comment_likes WHERE comment_id=? AND type='like'"), (cid,))
+            lr = c.fetchone(); cm['likes'] = lr[0] if lr else 0
+            c.execute(_q("SELECT COUNT(*) FROM comment_likes WHERE comment_id=? AND type='dislike'"), (cid,))
+            dr = c.fetchone(); cm['dislikes'] = dr[0] if dr else 0
+            if uid:
+                c.execute(_q("SELECT type FROM comment_likes WHERE comment_id=? AND user_id=?"), (cid, uid))
+                ur = c.fetchone()
+                cm['user_like'] = (ur[0] if not hasattr(ur,'keys') else ur['type']) if ur else None
+            else:
+                cm['user_like'] = None
+        except Exception:
+            conn.rollback(); cm['likes'] = 0; cm['dislikes'] = 0; cm['user_like'] = None
         c.execute(_q("SELECT id,comment_id,user_id,display_name,content,created_at FROM comment_replies WHERE comment_id=? ORDER BY created_at ASC"), (cid,))
         rrws = c.fetchall()
         replies = []
         for rrow in rrws:
             rm = _row(rrow)
             rid = rm['id']
-            c.execute(_q("SELECT COUNT(*) FROM reply_likes WHERE reply_id=? AND type='like'"), (rid,))
-            lr2 = c.fetchone(); rm['likes'] = lr2[0] if lr2 else 0
-            c.execute(_q("SELECT COUNT(*) FROM reply_likes WHERE reply_id=? AND type='dislike'"), (rid,))
-            dr2 = c.fetchone(); rm['dislikes'] = dr2[0] if dr2 else 0
-            if uid:
-                c.execute(_q("SELECT type FROM reply_likes WHERE reply_id=? AND user_id=?"), (rid, uid))
-                ur2 = c.fetchone()
-                rm['user_like'] = (ur2[0] if not hasattr(ur2,'keys') else ur2['type']) if ur2 else None
-            else:
-                rm['user_like'] = None
+            try:
+                c.execute(_q("SELECT COUNT(*) FROM reply_likes WHERE reply_id=? AND type='like'"), (rid,))
+                lr2 = c.fetchone(); rm['likes'] = lr2[0] if lr2 else 0
+                c.execute(_q("SELECT COUNT(*) FROM reply_likes WHERE reply_id=? AND type='dislike'"), (rid,))
+                dr2 = c.fetchone(); rm['dislikes'] = dr2[0] if dr2 else 0
+                if uid:
+                    c.execute(_q("SELECT type FROM reply_likes WHERE reply_id=? AND user_id=?"), (rid, uid))
+                    ur2 = c.fetchone()
+                    rm['user_like'] = (ur2[0] if not hasattr(ur2,'keys') else ur2['type']) if ur2 else None
+                else:
+                    rm['user_like'] = None
+            except Exception:
+                conn.rollback(); rm['likes'] = 0; rm['dislikes'] = 0; rm['user_like'] = None
             replies.append(rm)
         cm['replies'] = replies
         result.append(cm)
