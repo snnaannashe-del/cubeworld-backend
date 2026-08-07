@@ -156,6 +156,17 @@ class AddCommentRequest(BaseModel):
     content: str
     expire_seconds: int = None
 
+
+class AddReplyRequest(BaseModel):
+    content: str
+
+class LikeCommentRequest(BaseModel):
+    type: str = 'like'
+
+class EditContentRequest(BaseModel):
+    content: str
+
+
 class CreateSignalRequest(BaseModel):
     ticker: str
     direction: str = "LONG"
@@ -1141,6 +1152,52 @@ async def reply_to_comment(post_id: int, cid: int, body: AddCommentRequest, user
     display_name = db.get_display_name(user["id"])
     expire_seconds = body.expire_seconds if body.expire_seconds else None
     return db.add_comment_reply(cid, user["id"], display_name, content, expire_seconds)
+
+
+@app.post("/feed/comment/{cid}/reply")
+async def add_comment_reply_ep(cid: int, body: AddReplyRequest, user=Depends(get_current_user)):
+    content = (body.content or '').strip()[:500]
+    if not content:
+        raise HTTPException(400, "Content required")
+    display_name = db.get_display_name(user["id"])
+    rid = db.add_comment_reply(cid, user["id"], display_name, content)
+    return {"id": rid, "display_name": display_name, "content": content,
+            "created_at": datetime.utcnow().isoformat(), "ok": True}
+
+@app.post("/feed/comment/{cid}/like")
+async def like_feed_comment_ep(cid: int, body: LikeCommentRequest, user=Depends(get_current_user)):
+    return db.like_comment(cid, user["id"], body.type)
+
+@app.post("/feed/reply/{rid}/like")
+async def like_feed_reply_ep(rid: int, body: LikeCommentRequest, user=Depends(get_current_user)):
+    return db.like_reply(rid, user["id"], body.type)
+
+@app.delete("/feed/comment/{cid}")
+async def delete_feed_comment_ep(cid: int, user=Depends(get_current_user)):
+    db.delete_post_comment(cid, user["id"])
+    return {"ok": True}
+
+@app.delete("/feed/reply/{rid}")
+async def delete_feed_reply_ep(rid: int, user=Depends(get_current_user)):
+    db.delete_comment_reply(rid, user["id"])
+    return {"ok": True}
+
+@app.put("/feed/comment/{cid}")
+async def edit_feed_comment_ep(cid: int, body: EditContentRequest, user=Depends(get_current_user)):
+    content = (body.content or '').strip()[:500]
+    if not content:
+        raise HTTPException(400, "Content required")
+    db.edit_post_comment(cid, user["id"], content)
+    return {"ok": True}
+
+@app.put("/feed/reply/{rid}")
+async def edit_feed_reply_ep(rid: int, body: EditContentRequest, user=Depends(get_current_user)):
+    content = (body.content or '').strip()[:500]
+    if not content:
+        raise HTTPException(400, "Content required")
+    db.edit_comment_reply(rid, user["id"], content)
+    return {"ok": True}
+
 
 @app.get("/follow/{target_id}")
 async def get_follow_status(target_id: int, user=Depends(get_current_user)):
