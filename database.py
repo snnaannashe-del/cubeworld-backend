@@ -2361,3 +2361,55 @@ def edit_comment_reply(reply_id, user_id, content):
         return {"ok": True, "content": content}
     finally:
         conn.close()
+
+
+def like_comment(comment_id, user_id, like_type):
+    """Toggle like/dislike on a comment. Returns updated counts."""
+    conn = get_db(); c = conn.cursor()
+    uid = int(user_id)
+    try:
+        c.execute(_q("SELECT type FROM comment_likes WHERE comment_id=? AND user_id=?"), (comment_id, uid))
+        existing = c.fetchone()
+        existing_type = (existing[0] if not hasattr(existing, 'keys') else existing['type']) if existing else None
+        if existing_type == like_type:
+            c.execute(_q("DELETE FROM comment_likes WHERE comment_id=? AND user_id=?"), (comment_id, uid))
+        elif existing_type:
+            c.execute(_q("UPDATE comment_likes SET type=? WHERE comment_id=? AND user_id=?"), (like_type, comment_id, uid))
+        else:
+            c.execute(_q("INSERT INTO comment_likes (comment_id,user_id,type) VALUES (?,?,?)"), (comment_id, uid, like_type))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+    conn.close(); return {"ok": True}
+
+
+def like_reply(reply_id, user_id, like_type):
+    """Toggle like/dislike on a reply."""
+    conn = get_db(); c = conn.cursor()
+    uid = int(user_id)
+    try:
+        c.execute(_q("SELECT type FROM reply_likes WHERE reply_id=? AND user_id=?"), (reply_id, uid))
+        existing = c.fetchone()
+        existing_type = (existing[0] if not hasattr(existing, 'keys') else existing['type']) if existing else None
+        if existing_type == like_type:
+            c.execute(_q("DELETE FROM reply_likes WHERE reply_id=? AND user_id=?"), (reply_id, uid))
+        elif existing_type:
+            c.execute(_q("UPDATE reply_likes SET type=? WHERE reply_id=? AND user_id=?"), (like_type, reply_id, uid))
+        else:
+            c.execute(_q("INSERT INTO reply_likes (reply_id,user_id,type) VALUES (?,?,?)"), (reply_id, uid, like_type))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+    conn.close(); return {"ok": True}
+
+
+def delete_post_comment(comment_id, user_id):
+    conn = get_db(); c = conn.cursor()
+    c.execute(_q("DELETE FROM post_comments WHERE id=? AND user_id=?"), (comment_id, int(user_id)))
+    conn.commit(); conn.close(); return True
+
+
+def edit_post_comment(comment_id, user_id, content):
+    conn = get_db(); c = conn.cursor()
+    c.execute(_q("UPDATE post_comments SET content=? WHERE id=? AND user_id=?"), (content, comment_id, int(user_id)))
+    conn.commit(); conn.close(); return True
