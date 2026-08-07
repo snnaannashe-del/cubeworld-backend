@@ -5,7 +5,7 @@ CubeWorld Database ÃÂ¢ÃÂÃÂ dual-mode: PostgreSQL (Render) or SQ
 """
 import os
 import hashlib
-from datetime import datetime
+from datetime import datetime, timedelta
 
 DATABASE_URL = os.getenv("DATABASE_URL")  # set automatically by Render
 
@@ -358,7 +358,28 @@ def init_db():
             created_at TIMESTAMP NOT NULL DEFAULT NOW(),
             expires_at TIMESTAMP NOT NULL
         )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS comment_likes (
+            id SERIAL PRIMARY KEY,
+            comment_id INTEGER NOT NULL REFERENCES post_comments(id) ON DELETE CASCADE,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            type TEXT NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            UNIQUE(comment_id, user_id)
+        )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS comment_replies (
+            id SERIAL PRIMARY KEY,
+            comment_id INTEGER NOT NULL REFERENCES post_comments(id) ON DELETE CASCADE,
+            user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            display_name TEXT,
+            content TEXT NOT NULL,
+            expire_at TIMESTAMP,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        )""")
         conn.commit()
+        try:
+            c.execute("ALTER TABLE post_comments ADD COLUMN expire_at TIMESTAMP")
+            conn.commit()
+        except Exception: pass
     else:
         # SQLite schema (original)
         c.execute("""CREATE TABLE IF NOT EXISTS users (
@@ -1684,11 +1705,15 @@ def get_post_comments(post_id, limit=100):
     c.execute(_q("SELECT id,post_id,user_id,display_name,content,created_at FROM post_comments WHERE post_id=? ORDER BY created_at ASC LIMIT ?"), (post_id, limit))
     rows = c.fetchall(); conn.close(); return _fetchall(rows)
 
-def add_post_comment(post_id, user_id, display_name, content):
+def add_post_comment(post_id, user_id, display_name, content, expire_seconds=None):
     conn = get_db()
-    sql = _q("INSERT INTO post_comments (post_id,user_id,display_name,content) VALUES (?,?,?,?)")
-    cid = _execute_returning(conn, sql, (post_id, user_id, display_name, content))
-    # Increment comment_count
+    if expire_seconds:
+        expire_at = datetime.utcnow() + timedelta(seconds=int(expire_seconds))
+        sql = _q("INSERT INTO post_comments (post_id,user_id,display_name,content,expire_at) VALUES (?,?,?,?,?)")
+        cid = _execute_returning(conn, sql, (post_id, user_id, display_name, content, expire_at))
+    else:
+        sql = _q("INSERT INTO post_comments (post_id,user_id,display_name,content) VALUES (?,?,?,?)")
+        cid = _execute_returning(conn, sql, (post_id, user_id, display_name, content))
     conn2 = get_db(); c2 = conn2.cursor()
     c2.execute(_q("UPDATE posts SET comment_count=comment_count+1 WHERE id=?"), (post_id,))
     conn2.commit(); conn2.close()
@@ -2170,5 +2195,59 @@ def admin_delete_video_posts() -> int:
         deleted = c.rowcount
         conn.commit()
         return deleted
+    finally:
+        conn.close()
+
+
+def toggle_comment_like(comment_id, user_id, like_type):
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute(_q("SELECT type FROM comment_likes WHERE comment_id=? AND user_id=?"), (comment_id, user_id))
+        existing = c.fetchone()
+        if existing:
+            curr = existing[0] if not hasattr(existing, "keys") else existing["type"]
+            if curr == like_type:
+                c.execute(_q("DELETE FROM comment_likes WHERE comment_id=? AND user_id=?"), (comment_id, user_id))
+            else:
+                c.execute(_q("UPDATE comment_likes SET type=? WHERE comment_id=? AND user_id=?"), (like_type, comment_id, user_id))
+        else:
+            c.execute(_q("INSERT INTO comment_likes (comment_id,user_id,type) VALUES (?,?,?)"), (comment_id, user_id, like_type))
+        conn.commit()
+        c.execute(_q("SELECT COUNT(*) FROM comment_likes WHERE comment_id=? AND type='like'"), (comment_id,))
+        lrow = c.fetchone(); likes = lrow[0] if lrow else 0
+        c.execute(_q("SELECT COUNT(*) FROM comment_likes WHERE comment_id=? AND type='dislike'"), (comment_id,))
+        drow = c.fetchone(); dislikes = drow[0] if drow else 0
+        c.execute(_q("SELECT type FROM comment_likes WHERE comment_id=? AND user_id=?"), (comment_id, user_id))
+        urow = c.fetchone()
+        user_like = (urow[0] if not hasattr(urow, "keys") else urow["type"]) if urow else None
+        return {"likes": likes, "dislikes": dislikes, "user_like": user_like}
+    finally:
+        conn.close()
+
+
+def add_comment_reply(comment_id, user_id, display_name, content, expire_seconds=None):
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        expire_at = None
+        if expire_seconds:
+            expire_at = datetime.utcnow() + timedelta(seconds=int(expire_seconds))
+        else:
+            c.execute(_q("SELECT expire_at FROM post_comments WHERE id=?"), (comment_id,))
+            prow = c.fetchone()
+            if prow:
+                parent_exp = prow[0] if not hasattr(prow, "keys") else prow.get("expire_at")
+                if parent_exp:
+                    expire_at = parent_exp
+        if expire_at:
+            sql = _q("INSERT INTO comment_replies (comment_id,user_id,display_name,content,expire_at) VALUES (?,?,?,?,?)")
+            rid = _execute_returning(conn, sql, (comment_id, user_id, display_name, content, expire_at))
+        else:
+            sql = _q("INSERT INTO comment_replies (comment_id,user_id,display_name,content) VALUES (?,?,?,?)")
+            rid = _execute_returning(conn, sql, (comment_id, user_id, display_name, content))
+        conn.commit()
+        c.execute(_q("SELECT id,comment_id,user_id,display_name,content,created_at FROM comment_replies WHERE id=?"), (rid,))
+        return _row(c.fetchone())
     finally:
         conn.close()
