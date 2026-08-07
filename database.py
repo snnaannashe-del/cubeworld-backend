@@ -1710,6 +1710,7 @@ def like_feed_post(post_id, user_id):
 
 def get_post_comments(post_id, limit=100, user_id=None):
     conn = get_db(); c = conn.cursor()
+    uid = int(user_id) if user_id else None
     c.execute(_q("SELECT id,post_id,user_id,display_name,content,created_at FROM post_comments WHERE post_id=? ORDER BY created_at ASC LIMIT ?"), (post_id, limit))
     rows = c.fetchall()
     result = []
@@ -1720,8 +1721,8 @@ def get_post_comments(post_id, limit=100, user_id=None):
         lr = c.fetchone(); cm['likes'] = lr[0] if lr else 0
         c.execute(_q("SELECT COUNT(*) FROM comment_likes WHERE comment_id=? AND type='dislike'"), (cid,))
         dr = c.fetchone(); cm['dislikes'] = dr[0] if dr else 0
-        if user_id:
-            c.execute(_q("SELECT type FROM comment_likes WHERE comment_id=? AND user_id=?"), (cid, user_id))
+        if uid:
+            c.execute(_q("SELECT type FROM comment_likes WHERE comment_id=? AND user_id=?"), (cid, uid))
             ur = c.fetchone()
             cm['user_like'] = (ur[0] if not hasattr(ur,'keys') else ur['type']) if ur else None
         else:
@@ -1736,8 +1737,8 @@ def get_post_comments(post_id, limit=100, user_id=None):
             lr2 = c.fetchone(); rm['likes'] = lr2[0] if lr2 else 0
             c.execute(_q("SELECT COUNT(*) FROM reply_likes WHERE reply_id=? AND type='dislike'"), (rid,))
             dr2 = c.fetchone(); rm['dislikes'] = dr2[0] if dr2 else 0
-            if user_id:
-                c.execute(_q("SELECT type FROM reply_likes WHERE reply_id=? AND user_id=?"), (rid, user_id))
+            if uid:
+                c.execute(_q("SELECT type FROM reply_likes WHERE reply_id=? AND user_id=?"), (rid, uid))
                 ur2 = c.fetchone()
                 rm['user_like'] = (ur2[0] if not hasattr(ur2,'keys') else ur2['type']) if ur2 else None
             else:
