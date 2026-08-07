@@ -153,6 +153,7 @@ class SetGroupKeyRequest(BaseModel):
 
 class AddCommentRequest(BaseModel):
     content: str
+    expire_seconds: int = None
 
 class CreateSignalRequest(BaseModel):
     ticker: str
@@ -1108,9 +1109,28 @@ async def add_feed_comment(post_id: int, body: AddCommentRequest, user=Depends(g
     if not content:
         raise HTTPException(400, "Content required")
     display_name = db.get_display_name(user["id"])
-    cid = db.add_post_comment(post_id, user["id"], display_name, content)
+    expire_seconds = body.expire_seconds if body.expire_seconds else None
+    cid = db.add_post_comment(post_id, user["id"], display_name, content, expire_seconds)
     return {"id": cid, "display_name": display_name, "content": content,
             "created_at": datetime.utcnow().isoformat(), "ok": True}
+
+class CommentLikeRequest(BaseModel):
+    type: str = "like"
+
+@app.post("/feed/{post_id}/comment/{cid}/like")
+async def like_comment(post_id: int, cid: int, body: CommentLikeRequest, user=Depends(get_current_user)):
+    if body.type not in ("like", "dislike"):
+        raise HTTPException(400, "Invalid type")
+    return db.toggle_comment_like(cid, user["id"], body.type)
+
+@app.post("/feed/{post_id}/comment/{cid}/reply")
+async def reply_to_comment(post_id: int, cid: int, body: AddCommentRequest, user=Depends(get_current_user)):
+    content = (body.content or "").strip()[:500]
+    if not content:
+        raise HTTPException(400, "Content required")
+    display_name = db.get_display_name(user["id"])
+    expire_seconds = body.expire_seconds if body.expire_seconds else None
+    return db.add_comment_reply(cid, user["id"], display_name, content, expire_seconds)
 
 @app.get("/follow/{target_id}")
 async def get_follow_status(target_id: int, user=Depends(get_current_user)):
