@@ -1149,7 +1149,16 @@ async def get_follow_status(target_id: int, user=Depends(get_current_user)):
     return {"following": following, **counts}
 
 @app.post("/follow/{target_id}")
-async def follow(target_id: int, user=Depends(get_curren
+async def follow(target_id: int, user=Depends(get_current_user)):
+    ok = db.follow_user(user["id"], target_id)
+    counts = db.get_follow_counts(target_id)
+    return {"ok": ok, "following": True, **counts}
+
+@app.delete("/follow/{target_id}")
+async def unfollow(target_id: int, user=Depends(get_current_user)):
+    db.unfollow_user(user["id"], target_id)
+    counts = db.get_follow_counts(target_id)
+    return {"ok": True, "following": False, **counts}
 
 class EditReplyRequest(BaseModel):
     content: str
