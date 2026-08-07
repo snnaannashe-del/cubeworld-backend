@@ -375,6 +375,14 @@ def init_db():
             expire_at TIMESTAMP,
             created_at TIMESTAMP NOT NULL DEFAULT NOW()
         )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS reply_likes (
+            id SERIAL PRIMARY KEY,
+            reply_id INTEGER NOT NULL REFERENCES comment_replies(id) ON DELETE CASCADE,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            type TEXT NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            UNIQUE(reply_id, user_id)
+        )""")
         conn.commit()
         try:
             c.execute("ALTER TABLE post_comments ADD COLUMN expire_at TIMESTAMP")
@@ -1700,11 +1708,45 @@ def get_following_feed(user_id, limit=30):
 def like_feed_post(post_id, user_id):
     return like_post(post_id, user_id)  # reuse existing
 
-def get_post_comments(post_id, limit=100):
+def get_post_comments(post_id, limit=100, user_id=None):
     conn = get_db(); c = conn.cursor()
     c.execute(_q("SELECT id,post_id,user_id,display_name,content,created_at FROM post_comments WHERE post_id=? ORDER BY created_at ASC LIMIT ?"), (post_id, limit))
-    rows = c.fetchall(); conn.close(); return _fetchall(rows)
-
+    rows = c.fetchall()
+    result = []
+    for row in rows:
+        cm = _row(row)
+        cid = cm['id']
+        c.execute(_q("SELECT COUNT(*) FROM comment_likes WHERE comment_id=? AND type='like'"), (cid,))
+        lr = c.fetchone(); cm['likes'] = lr[0] if lr else 0
+        c.execute(_q("SELECT COUNT(*) FROM comment_likes WHERE comment_id=? AND type='dislike'"), (cid,))
+        dr = c.fetchone(); cm['dislikes'] = dr[0] if dr else 0
+        if user_id:
+            c.execute(_q("SELECT type FROM comment_likes WHERE comment_id=? AND user_id=?"), (cid, user_id))
+            ur = c.fetchone()
+            cm['user_like'] = (ur[0] if not hasattr(ur,'keys') else ur['type']) if ur else None
+        else:
+            cm['user_like'] = None
+        c.execute(_q("SELECT id,comment_id,user_id,display_name,content,created_at FROM comment_replies WHERE comment_id=? ORDER BY created_at ASC"), (cid,))
+        rrws = c.fetchall()
+        replies = []
+        for rrow in rrws:
+            rm = _row(rrow)
+            rid = rm['id']
+            c.execute(_q("SELECT COUNT(*) FROM reply_likes WHERE reply_id=? AND type='like'"), (rid,))
+            lr2 = c.fetchone(); rm['likes'] = lr2[0] if lr2 else 0
+            c.execute(_q("SELECT COUNT(*) FROM reply_likes WHERE reply_id=? AND type='dislike'"), (rid,))
+            dr2 = c.fetchone(); rm['dislikes'] = dr2[0] if dr2 else 0
+            if user_id:
+                c.execute(_q("SELECT type FROM reply_likes WHERE reply_id=? AND user_id=?"), (rid, user_id))
+                ur2 = c.fetchone()
+                rm['user_like'] = (ur2[0] if not hasattr(ur2,'keys') else ur2['type']) if ur2 else None
+            else:
+                rm['user_like'] = None
+            replies.append(rm)
+        cm['replies'] = replies
+        result.append(cm)
+    conn.close()
+    return result
 def add_post_comment(post_id, user_id, display_name, content, expire_seconds=None):
     conn = get_db()
     if expire_seconds:
@@ -2249,5 +2291,66 @@ def add_comment_reply(comment_id, user_id, display_name, content, expire_seconds
         conn.commit()
         c.execute(_q("SELECT id,comment_id,user_id,display_name,content,created_at FROM comment_replies WHERE id=?"), (rid,))
         return _row(c.fetchone())
+    finally:
+        conn.close()
+
+
+def toggle_reply_like(reply_id, user_id, like_type):
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute(_q("SELECT type FROM reply_likes WHERE reply_id=? AND user_id=?"), (reply_id, user_id))
+        existing = c.fetchone()
+        if existing:
+            curr = existing[0] if not hasattr(existing, "keys") else existing["type"]
+            if curr == like_type:
+                c.execute(_q("DELETE FROM reply_likes WHERE reply_id=? AND user_id=?"), (reply_id, user_id))
+            else:
+                c.execute(_q("UPDATE reply_likes SET type=? WHERE reply_id=? AND user_id=?"), (like_type, reply_id, user_id))
+        else:
+            c.execute(_q("INSERT INTO reply_likes (reply_id,user_id,type) VALUES (?,?,?)"), (reply_id, user_id, like_type))
+        conn.commit()
+        c.execute(_q("SELECT COUNT(*) FROM reply_likes WHERE reply_id=? AND type='like'"), (reply_id,))
+        lr = c.fetchone(); likes = lr[0] if lr else 0
+        c.execute(_q("SELECT COUNT(*) FROM reply_likes WHERE reply_id=? AND type='dislike'"), (reply_id,))
+        dr = c.fetchone(); dislikes = dr[0] if dr else 0
+        c.execute(_q("SELECT type FROM reply_likes WHERE reply_id=? AND user_id=?"), (reply_id, user_id))
+        ur = c.fetchone()
+        user_like = (ur[0] if not hasattr(ur, "keys") else ur["type"]) if ur else None
+        return {"likes": likes, "dislikes": dislikes, "user_like": user_like}
+    finally:
+        conn.close()
+
+def delete_comment_reply(reply_id, user_id):
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute(_q("SELECT user_id FROM comment_replies WHERE id=?"), (reply_id,))
+        row = c.fetchone()
+        if not row:
+            return {"error": "not found"}
+        owner = row[0] if not hasattr(row, "keys") else row["user_id"]
+        if owner != user_id:
+            return {"error": "forbidden"}
+        c.execute(_q("DELETE FROM comment_replies WHERE id=?"), (reply_id,))
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+def edit_comment_reply(reply_id, user_id, content):
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute(_q("SELECT user_id FROM comment_replies WHERE id=?"), (reply_id,))
+        row = c.fetchone()
+        if not row:
+            return {"error": "not found"}
+        owner = row[0] if not hasattr(row, "keys") else row["user_id"]
+        if owner != user_id:
+            return {"error": "forbidden"}
+        c.execute(_q("UPDATE comment_replies SET content=? WHERE id=?"), (content, reply_id))
+        conn.commit()
+        return {"ok": True, "content": content}
     finally:
         conn.close()
