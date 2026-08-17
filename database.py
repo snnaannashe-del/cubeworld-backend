@@ -47,6 +47,21 @@ def _row(r):
     return dict(r) if r else None
 
 
+def _scalar(r, default=0):
+    """First column of a fetchone() result.
+
+    PostgreSQL uses RealDictCursor, so rows are dicts and r[0] raises
+    KeyError: 0. SQLite gives sqlite3.Row, where r[0] works. This handles
+    both — always use it instead of indexing a row by position.
+    """
+    if r is None:
+        return default
+    if hasattr(r, "keys"):
+        keys = list(r.keys())
+        return r[keys[0]] if keys else default
+    return r[0]
+
+
 def _fetchall(rows):
     return [dict(r) for r in rows]
 
@@ -1678,6 +1693,23 @@ def get_user_profile(uid):
     return rows[0] if rows else None
 
 
+def feed_post_exists(post_id) -> bool:
+    """Guard for endpoints that touch a post by id.
+
+    Without it, commenting on a missing post surfaced the foreign-key
+    violation as a 500, and liking one returned a cheerful 200.
+    """
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute(_q("SELECT 1 FROM posts WHERE id=?"), (post_id,))
+        return c.fetchone() is not None
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+
 def get_user_feed(uid, limit=30):
     conn = get_db(); _ensure_post_columns(conn); c = conn.cursor()
     sql = _q("SELECT * FROM posts WHERE user_id = ? ORDER BY created_at DESC LIMIT ?")
@@ -1718,52 +1750,78 @@ def get_following_feed(user_id, limit=30):
 def like_feed_post(post_id, user_id):
     return like_post(post_id, user_id)  # reuse existing
 
+def _like_maps(c, table, id_col, ids, uid):
+    """Aggregate like counts for a set of ids in 2 queries instead of 3 per row.
+
+    Returns (counts, mine) where counts[id] = {'likes': n, 'dislikes': n}
+    and mine[id] = 'like' | 'dislike'.
+    """
+    counts, mine = {}, {}
+    if not ids:
+        return counts, mine
+    marks = ",".join([_PH] * len(ids))
+    c.execute("SELECT %s AS oid, type, COUNT(*) AS n FROM %s WHERE %s IN (%s) "
+              "GROUP BY %s, type" % (id_col, table, id_col, marks, id_col), tuple(ids))
+    for r in c.fetchall():
+        d = dict(r)
+        slot = counts.setdefault(d['oid'], {'likes': 0, 'dislikes': 0})
+        slot['likes' if d['type'] == 'like' else 'dislikes'] = d['n']
+    if uid:
+        c.execute("SELECT %s AS oid, type FROM %s WHERE %s IN (%s) AND user_id=%s"
+                  % (id_col, table, id_col, marks, _PH), tuple(ids) + (uid,))
+        for r in c.fetchall():
+            d = dict(r)
+            mine[d['oid']] = d['type']
+    return counts, mine
+
+
 def get_post_comments(post_id, limit=100, user_id=None):
+    """Comments for a post, each with its replies and like counts.
+
+    Counts are aggregated in bulk. The old version ran 3 queries per comment
+    and 3 per reply (300+ round trips for a busy post) and wrapped them in a
+    bare `except` that reset every count to 0 — which is why like counts
+    always showed zero on PostgreSQL: rows come back as dicts there, so the
+    positional row[0] access raised KeyError and got swallowed.
+    """
     conn = get_db(); c = conn.cursor()
-    uid = int(user_id) if user_id else None
-    c.execute(_q("SELECT id,post_id,user_id,display_name,content,created_at FROM post_comments WHERE post_id=? ORDER BY created_at ASC LIMIT ?"), (post_id, limit))
-    rows = c.fetchall()
-    result = []
-    for row in rows:
-        cm = _row(row)
-        cid = cm['id']
-        try:
-            c.execute(_q("SELECT COUNT(*) FROM comment_likes WHERE comment_id=? AND type='like'"), (cid,))
-            lr = c.fetchone(); cm['likes'] = lr[0] if lr else 0
-            c.execute(_q("SELECT COUNT(*) FROM comment_likes WHERE comment_id=? AND type='dislike'"), (cid,))
-            dr = c.fetchone(); cm['dislikes'] = dr[0] if dr else 0
-            if uid:
-                c.execute(_q("SELECT type FROM comment_likes WHERE comment_id=? AND user_id=?"), (cid, uid))
-                ur = c.fetchone()
-                cm['user_like'] = (ur[0] if not hasattr(ur,'keys') else ur['type']) if ur else None
-            else:
-                cm['user_like'] = None
-        except Exception:
-            conn.rollback(); cm['likes'] = 0; cm['dislikes'] = 0; cm['user_like'] = None
-        c.execute(_q("SELECT id,comment_id,user_id,display_name,content,created_at FROM comment_replies WHERE comment_id=? ORDER BY created_at ASC"), (cid,))
-        rrws = c.fetchall()
-        replies = []
-        for rrow in rrws:
-            rm = _row(rrow)
-            rid = rm['id']
-            try:
-                c.execute(_q("SELECT COUNT(*) FROM reply_likes WHERE reply_id=? AND type='like'"), (rid,))
-                lr2 = c.fetchone(); rm['likes'] = lr2[0] if lr2 else 0
-                c.execute(_q("SELECT COUNT(*) FROM reply_likes WHERE reply_id=? AND type='dislike'"), (rid,))
-                dr2 = c.fetchone(); rm['dislikes'] = dr2[0] if dr2 else 0
-                if uid:
-                    c.execute(_q("SELECT type FROM reply_likes WHERE reply_id=? AND user_id=?"), (rid, uid))
-                    ur2 = c.fetchone()
-                    rm['user_like'] = (ur2[0] if not hasattr(ur2,'keys') else ur2['type']) if ur2 else None
-                else:
-                    rm['user_like'] = None
-            except Exception:
-                conn.rollback(); rm['likes'] = 0; rm['dislikes'] = 0; rm['user_like'] = None
-            replies.append(rm)
-        cm['replies'] = replies
-        result.append(cm)
-    conn.close()
-    return result
+    try:
+        uid = int(user_id) if user_id else None
+        limit = max(1, min(int(limit), 500))
+        c.execute(_q("SELECT id,post_id,user_id,display_name,content,created_at "
+                     "FROM post_comments WHERE post_id=? "
+                     "ORDER BY created_at ASC LIMIT ?"), (post_id, limit))
+        comments = _fetchall(c.fetchall())
+        if not comments:
+            return []
+        cids = [cm['id'] for cm in comments]
+
+        c.execute("SELECT id,comment_id,user_id,display_name,content,created_at "
+                  "FROM comment_replies WHERE comment_id IN (%s) "
+                  "ORDER BY created_at ASC" % ",".join([_PH] * len(cids)), tuple(cids))
+        replies = _fetchall(c.fetchall())
+        rids = [rm['id'] for rm in replies]
+
+        c_counts, c_mine = _like_maps(c, 'comment_likes', 'comment_id', cids, uid)
+        r_counts, r_mine = _like_maps(c, 'reply_likes', 'reply_id', rids, uid)
+
+        by_comment = {}
+        for rm in replies:
+            cnt = r_counts.get(rm['id'], {})
+            rm['likes'] = cnt.get('likes', 0)
+            rm['dislikes'] = cnt.get('dislikes', 0)
+            rm['user_like'] = r_mine.get(rm['id'])
+            by_comment.setdefault(rm['comment_id'], []).append(rm)
+
+        for cm in comments:
+            cnt = c_counts.get(cm['id'], {})
+            cm['likes'] = cnt.get('likes', 0)
+            cm['dislikes'] = cnt.get('dislikes', 0)
+            cm['user_like'] = c_mine.get(cm['id'])
+            cm['replies'] = by_comment.get(cm['id'], [])
+        return comments
+    finally:
+        conn.close()
 def add_post_comment(post_id, user_id, display_name, content, expire_seconds=None):
     conn = get_db()
     if expire_seconds:
@@ -2274,9 +2332,9 @@ def toggle_comment_like(comment_id, user_id, like_type):
             c.execute(_q("INSERT INTO comment_likes (comment_id,user_id,type) VALUES (?,?,?)"), (comment_id, user_id, like_type))
         conn.commit()
         c.execute(_q("SELECT COUNT(*) FROM comment_likes WHERE comment_id=? AND type='like'"), (comment_id,))
-        lrow = c.fetchone(); likes = lrow[0] if lrow else 0
+        lrow = c.fetchone(); likes = _scalar(lrow)
         c.execute(_q("SELECT COUNT(*) FROM comment_likes WHERE comment_id=? AND type='dislike'"), (comment_id,))
-        drow = c.fetchone(); dislikes = drow[0] if drow else 0
+        drow = c.fetchone(); dislikes = _scalar(drow)
         c.execute(_q("SELECT type FROM comment_likes WHERE comment_id=? AND user_id=?"), (comment_id, user_id))
         urow = c.fetchone()
         user_like = (urow[0] if not hasattr(urow, "keys") else urow["type"]) if urow else None
@@ -2328,9 +2386,9 @@ def toggle_reply_like(reply_id, user_id, like_type):
             c.execute(_q("INSERT INTO reply_likes (reply_id,user_id,type) VALUES (?,?,?)"), (reply_id, user_id, like_type))
         conn.commit()
         c.execute(_q("SELECT COUNT(*) FROM reply_likes WHERE reply_id=? AND type='like'"), (reply_id,))
-        lr = c.fetchone(); likes = lr[0] if lr else 0
+        lr = c.fetchone(); likes = _scalar(lr)
         c.execute(_q("SELECT COUNT(*) FROM reply_likes WHERE reply_id=? AND type='dislike'"), (reply_id,))
-        dr = c.fetchone(); dislikes = dr[0] if dr else 0
+        dr = c.fetchone(); dislikes = _scalar(dr)
         c.execute(_q("SELECT type FROM reply_likes WHERE reply_id=? AND user_id=?"), (reply_id, user_id))
         ur = c.fetchone()
         user_like = (ur[0] if not hasattr(ur, "keys") else ur["type"]) if ur else None
@@ -2374,52 +2432,54 @@ def edit_comment_reply(reply_id, user_id, content):
 
 
 def like_comment(comment_id, user_id, like_type):
-    """Toggle like/dislike on a comment. Returns updated counts."""
-    conn = get_db(); c = conn.cursor()
-    uid = int(user_id)
-    try:
-        c.execute(_q("SELECT type FROM comment_likes WHERE comment_id=? AND user_id=?"), (comment_id, uid))
-        existing = c.fetchone()
-        existing_type = (existing[0] if not hasattr(existing, 'keys') else existing['type']) if existing else None
-        if existing_type == like_type:
-            c.execute(_q("DELETE FROM comment_likes WHERE comment_id=? AND user_id=?"), (comment_id, uid))
-        elif existing_type:
-            c.execute(_q("UPDATE comment_likes SET type=? WHERE comment_id=? AND user_id=?"), (like_type, comment_id, uid))
-        else:
-            c.execute(_q("INSERT INTO comment_likes (comment_id,user_id,type) VALUES (?,?,?)"), (comment_id, uid, like_type))
-        conn.commit()
-    except Exception:
-        conn.rollback()
-    conn.close(); return {"ok": True}
+    """Alias kept for the /feed/comment/{cid}/like route.
+
+    Used to be a second, weaker implementation that swallowed errors and
+    returned only {"ok": True}, so the two routes for the same action
+    behaved differently. Now both go through toggle_comment_like and
+    return {likes, dislikes, user_like}.
+    """
+    return toggle_comment_like(comment_id, int(user_id), like_type)
 
 
 def like_reply(reply_id, user_id, like_type):
-    """Toggle like/dislike on a reply."""
-    conn = get_db(); c = conn.cursor()
-    uid = int(user_id)
-    try:
-        c.execute(_q("SELECT type FROM reply_likes WHERE reply_id=? AND user_id=?"), (reply_id, uid))
-        existing = c.fetchone()
-        existing_type = (existing[0] if not hasattr(existing, 'keys') else existing['type']) if existing else None
-        if existing_type == like_type:
-            c.execute(_q("DELETE FROM reply_likes WHERE reply_id=? AND user_id=?"), (reply_id, uid))
-        elif existing_type:
-            c.execute(_q("UPDATE reply_likes SET type=? WHERE reply_id=? AND user_id=?"), (like_type, reply_id, uid))
-        else:
-            c.execute(_q("INSERT INTO reply_likes (reply_id,user_id,type) VALUES (?,?,?)"), (reply_id, uid, like_type))
-        conn.commit()
-    except Exception:
-        conn.rollback()
-    conn.close(); return {"ok": True}
+    """Alias kept for the /feed/reply/{rid}/like route. See like_comment."""
+    return toggle_reply_like(reply_id, int(user_id), like_type)
 
 
 def delete_post_comment(comment_id, user_id):
-    conn = get_db(); c = conn.cursor()
-    c.execute(_q("DELETE FROM post_comments WHERE id=? AND user_id=?"), (comment_id, int(user_id)))
-    conn.commit(); conn.close(); return True
+    """Delete own comment. Returns 'ok', 'not found' or 'forbidden'."""
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute(_q("SELECT user_id FROM post_comments WHERE id=?"), (comment_id,))
+        row = c.fetchone()
+        if not row:
+            return {"error": "not found"}
+        if int(_scalar(row, -1)) != int(user_id):
+            return {"error": "forbidden"}
+        c.execute(_q("DELETE FROM post_comments WHERE id=? AND user_id=?"),
+                  (comment_id, int(user_id)))
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
 
 
 def edit_post_comment(comment_id, user_id, content):
-    conn = get_db(); c = conn.cursor()
-    c.execute(_q("UPDATE post_comments SET content=? WHERE id=? AND user_id=?"), (content, comment_id, int(user_id)))
-    conn.commit(); conn.close(); return True
+    """Edit own comment. Returns 'ok', 'not found' or 'forbidden'."""
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute(_q("SELECT user_id FROM post_comments WHERE id=?"), (comment_id,))
+        row = c.fetchone()
+        if not row:
+            return {"error": "not found"}
+        if int(_scalar(row, -1)) != int(user_id):
+            return {"error": "forbidden"}
+        c.execute(_q("UPDATE post_comments SET content=? WHERE id=? AND user_id=?"),
+                  (content, comment_id, int(user_id)))
+        conn.commit()
+        return {"ok": True, "content": content}
+    finally:
+        conn.close()

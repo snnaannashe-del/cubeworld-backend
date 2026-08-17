@@ -1053,7 +1053,9 @@ async def admin_delete_video_posts(secret: str = ""):
 
 @app.get("/feed")
 async def get_global_feed(limit: int = 30, offset: int = 0):
-    return db.get_global_feed(limit=min(limit,100), offset=offset)
+    # min() alone left the lower bound open: ?limit=-5 reached PostgreSQL as a
+    # negative LIMIT and returned 500.
+    return db.get_global_feed(limit=max(1, min(limit, 100)), offset=max(0, offset))
 
 @app.get("/feed/following")
 async def get_following_feed(user=Depends(get_current_user)):
@@ -1110,6 +1112,8 @@ async def create_feed_post(body: CreateVideoPostRequest, user=Depends(get_curren
 
 @app.post("/feed/{post_id}/like")
 async def like_feed_post(post_id: int, user=Depends(get_current_user)):
+    if not db.feed_post_exists(post_id):
+        raise HTTPException(404, "Post not found")
     likes, liked = db.like_post(post_id, user["id"])
     return {"likes": likes, "liked": liked, "ok": True}
 
@@ -1123,15 +1127,18 @@ async def fire_feed_post(post_id: int, user=Depends(get_current_user)):
 
 @app.get("/feed/{post_id}/comments")
 async def get_feed_comments(post_id: int, request: Request):
+    # Optional auth: anonymous readers get counts, logged-in readers also get
+    # their own like state. Used to `import jose.jwt`, but python-jose is not
+    # in requirements.txt, so this always raised ImportError and every request
+    # was treated as anonymous — user_like came back null even when signed in.
     user_id = None
-    try:
-        auth = request.headers.get("Authorization","")
-        if auth.startswith("Bearer "):
-            import jose.jwt as _jwt
-            payload = _jwt.decode(auth[7:], SECRET_KEY, algorithms=["HS256"])
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        try:
+            payload = jwt.decode(auth[7:], SECRET_KEY, algorithms=[JWT_ALG])
             user_id = payload.get("sub")
-    except Exception:
-        pass
+        except Exception:
+            pass
     return db.get_post_comments(post_id, user_id=user_id)
 
 @app.post("/feed/{post_id}/comment")
@@ -1139,6 +1146,8 @@ async def add_feed_comment(post_id: int, body: AddCommentRequest, user=Depends(g
     content = (body.content or '').strip()[:500]
     if not content:
         raise HTTPException(400, "Content required")
+    if not db.feed_post_exists(post_id):
+        raise HTTPException(404, "Post not found")
     display_name = db.get_display_name(user["id"])
     expire_seconds = body.expire_seconds if body.expire_seconds else None
     cid = db.add_post_comment(post_id, user["id"], display_name, content, expire_seconds)
@@ -1170,43 +1179,59 @@ async def add_comment_reply_ep(cid: int, body: AddReplyRequest, user=Depends(get
     if not content:
         raise HTTPException(400, "Content required")
     display_name = db.get_display_name(user["id"])
-    rid = db.add_comment_reply(cid, user["id"], display_name, content)
-    return {"id": rid, "display_name": display_name, "content": content,
-            "created_at": datetime.utcnow().isoformat(), "ok": True}
+    # add_comment_reply returns the whole row. This used to assign it to "id",
+    # so the response was {"id": {"id": 2, ...}} and the client could not use
+    # the reply id for anything afterwards.
+    return db.add_comment_reply(cid, user["id"], display_name, content)
+
+
+def _unwrap(result):
+    """Turn a {'error': ...} result from the db layer into an HTTP error."""
+    if isinstance(result, dict) and result.get("error"):
+        err = result["error"]
+        raise HTTPException(404 if err == "not found" else 403, err)
+    return result
+
 
 @app.post("/feed/comment/{cid}/like")
 async def like_feed_comment_ep(cid: int, body: LikeCommentRequest, user=Depends(get_current_user)):
+    if body.type not in ("like", "dislike"):
+        raise HTTPException(400, "Invalid type")
     return db.like_comment(cid, user["id"], body.type)
 
 @app.post("/feed/reply/{rid}/like")
 async def like_feed_reply_ep(rid: int, body: LikeCommentRequest, user=Depends(get_current_user)):
+    if body.type not in ("like", "dislike"):
+        raise HTTPException(400, "Invalid type")
     return db.like_reply(rid, user["id"], body.type)
 
+# The client calls these with the post id in the path (vfcpDelete / vfcpEdit in
+# world.html), so both shapes are registered. Previously only the short form
+# existed and every delete/edit of a comment from the UI returned 404.
 @app.delete("/feed/comment/{cid}")
-async def delete_feed_comment_ep(cid: int, user=Depends(get_current_user)):
-    db.delete_post_comment(cid, user["id"])
-    return {"ok": True}
+@app.delete("/feed/{post_id}/comment/{cid}")
+async def delete_feed_comment_ep(cid: int, post_id: int = 0, user=Depends(get_current_user)):
+    return _unwrap(db.delete_post_comment(cid, user["id"]))
 
 @app.delete("/feed/reply/{rid}")
 async def delete_feed_reply_ep(rid: int, user=Depends(get_current_user)):
-    db.delete_comment_reply(rid, user["id"])
-    return {"ok": True}
+    return _unwrap(db.delete_comment_reply(rid, user["id"]))
 
 @app.put("/feed/comment/{cid}")
-async def edit_feed_comment_ep(cid: int, body: EditContentRequest, user=Depends(get_current_user)):
+@app.put("/feed/{post_id}/comment/{cid}")
+async def edit_feed_comment_ep(cid: int, body: EditContentRequest, post_id: int = 0,
+                               user=Depends(get_current_user)):
     content = (body.content or '').strip()[:500]
     if not content:
         raise HTTPException(400, "Content required")
-    db.edit_post_comment(cid, user["id"], content)
-    return {"ok": True}
+    return _unwrap(db.edit_post_comment(cid, user["id"], content))
 
 @app.put("/feed/reply/{rid}")
 async def edit_feed_reply_ep(rid: int, body: EditContentRequest, user=Depends(get_current_user)):
     content = (body.content or '').strip()[:500]
     if not content:
         raise HTTPException(400, "Content required")
-    db.edit_comment_reply(rid, user["id"], content)
-    return {"ok": True}
+    return _unwrap(db.edit_comment_reply(rid, user["id"], content))
 
 
 @app.get("/follow/{target_id}")
