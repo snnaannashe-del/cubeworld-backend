@@ -1714,8 +1714,33 @@ def get_user_feed(uid, limit=30):
     conn = get_db(); _ensure_post_columns(conn); c = conn.cursor()
     sql = _q("SELECT * FROM posts WHERE user_id = ? ORDER BY created_at DESC LIMIT ?")
     c.execute(sql, (str(uid), limit))
-    rows = _fetchall(c.fetchall()); conn.close()
+    rows = _fetchall(c.fetchall())
+    avatars = _author_avatars(conn, [r.get('user_id') for r in rows])
+    conn.close()
+    for r in rows:
+        r['avatar_url'] = avatars.get(str(r.get('user_id')), '')
     return rows
+
+
+def _author_avatars(conn, user_ids):
+    """avatar_url for a set of post authors.
+
+    The posts table has no avatar column, so feed rows carried no avatar at
+    all and every client fell back to the first letter of the name. Only the
+    author themself saw their own photo, from their own browser cache.
+    """
+    ids = [u for u in {str(x) for x in user_ids if x is not None}]
+    if not ids:
+        return {}
+    c = conn.cursor()
+    try:
+        c.execute("SELECT id, avatar_url FROM users WHERE id IN (" +
+                  ",".join([_PH] * len(ids)) + ")", tuple(ids))
+        return {str(dict(r)['id']): (dict(r)['avatar_url'] or '') for r in c.fetchall()}
+    except Exception:
+        if _PG:
+            conn.rollback()
+        return {}
 
 
 def _live_comment_counts(conn, post_ids):
@@ -1747,6 +1772,7 @@ def get_global_feed(limit=30, offset=0):
     c.execute(sql, (limit, offset))
     rows = _fetchall(c.fetchall())
     counts = _live_comment_counts(conn, [r['id'] for r in rows])
+    avatars = _author_avatars(conn, [r.get('user_id') for r in rows])
     conn.close()
     for r in rows:
         try: r['tags'] = _json.loads(r.get('tags') or '[]')
@@ -1754,6 +1780,7 @@ def get_global_feed(limit=30, offset=0):
         r.setdefault('image_url', ''); r.setdefault('post_type', 'short')
         r.setdefault('title', ''); r['view_count'] = r.get('views', 0)
         r['comment_count'] = counts.get(r['id'], 0)
+        r['avatar_url'] = avatars.get(str(r.get('user_id')), '')
     return rows
 
 def get_following_feed(user_id, limit=30):
@@ -1764,12 +1791,17 @@ def get_following_feed(user_id, limit=30):
                 WHERE f.follower_id=?
                 ORDER BY p.created_at DESC LIMIT ?""")
     c.execute(sql, (user_id, limit))
-    rows = _fetchall(c.fetchall()); conn.close()
+    rows = _fetchall(c.fetchall())
+    counts = _live_comment_counts(conn, [r['id'] for r in rows])
+    avatars = _author_avatars(conn, [r.get('user_id') for r in rows])
+    conn.close()
     for r in rows:
         try: r['tags'] = _json.loads(r.get('tags') or '[]')
         except Exception: r['tags'] = []
         r.setdefault('image_url', ''); r.setdefault('post_type', 'short')
         r.setdefault('title', ''); r['view_count'] = r.get('views', 0)
+        r['comment_count'] = counts.get(r['id'], 0)
+        r['avatar_url'] = avatars.get(str(r.get('user_id')), '')
     return rows
 
 def like_feed_post(post_id, user_id):
@@ -1877,6 +1909,8 @@ def get_post_comments(post_id, limit=100, user_id=None):
 
         c_counts, c_mine = _like_maps(c, 'comment_likes', 'comment_id', cids, uid)
         r_counts, r_mine = _like_maps(c, 'reply_likes', 'reply_id', rids, uid)
+        avatars = _author_avatars(conn, [x.get('user_id') for x in comments] +
+                                        [x.get('user_id') for x in replies])
 
         by_comment = {}
         for rm in replies:
@@ -1884,6 +1918,7 @@ def get_post_comments(post_id, limit=100, user_id=None):
             rm['likes'] = cnt.get('likes', 0)
             rm['dislikes'] = cnt.get('dislikes', 0)
             rm['user_like'] = r_mine.get(rm['id'])
+            rm['avatar_url'] = avatars.get(str(rm.get('user_id')), '')
             by_comment.setdefault(rm['comment_id'], []).append(rm)
 
         for cm in comments:
@@ -1891,6 +1926,7 @@ def get_post_comments(post_id, limit=100, user_id=None):
             cm['likes'] = cnt.get('likes', 0)
             cm['dislikes'] = cnt.get('dislikes', 0)
             cm['user_like'] = c_mine.get(cm['id'])
+            cm['avatar_url'] = avatars.get(str(cm.get('user_id')), '')
             cm['replies'] = by_comment.get(cm['id'], [])
         return comments
     finally:
