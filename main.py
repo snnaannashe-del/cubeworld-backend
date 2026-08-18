@@ -2,6 +2,7 @@
 import os
 import secrets
 import string
+import base64
 import hashlib
 import hmac
 import jwt
@@ -10,6 +11,7 @@ from typing import Optional, Dict, Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, Request, BackgroundTasks, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -1032,6 +1034,31 @@ async def get_user_profile_ep(uid: str):
     p = db.get_user_profile(uid)
     if not p: return {}
     return p
+
+
+_PIXEL = base64.b64decode("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7")
+
+
+@app.get("/users/{uid}/avatar")
+async def get_user_avatar(uid: str):
+    """Serve an avatar as a real image the browser can cache.
+
+    Avatars are stored as data: URLs. Inlining one in every feed post and
+    every comment made the payload ~94% base64 and repeated the same photo
+    dozens of times per response. Lists now carry a short avatar_ver and
+    point here, so each photo travels once and is cached for a day.
+    """
+    p = db.get_user_profile(uid) or {}
+    raw = p.get("avatar_url") or ""
+    headers = {"Cache-Control": "public, max-age=86400", "Access-Control-Allow-Origin": "*"}
+    if raw.startswith("data:"):
+        try:
+            head, b64 = raw.split(",", 1)
+            mime = head[5:].split(";")[0] or "image/jpeg"
+            return Response(content=base64.b64decode(b64), media_type=mime, headers=headers)
+        except Exception:
+            pass
+    return Response(content=_PIXEL, media_type="image/gif", headers=headers)
 
 @app.get("/feed/user/{uid}")
 async def get_user_feed_ep(uid: str):

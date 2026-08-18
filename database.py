@@ -1718,29 +1718,52 @@ def get_user_feed(uid, limit=30):
     avatars = _author_avatars(conn, [r.get('user_id') for r in rows])
     conn.close()
     for r in rows:
-        r['avatar_url'] = avatars.get(str(r.get('user_id')), '')
+        _apply_avatar(r, avatars)
     return rows
 
 
 def _author_avatars(conn, user_ids):
-    """avatar_url for a set of post authors.
+    """Avatar reference for a set of authors — never the raw image.
 
-    The posts table has no avatar column, so feed rows carried no avatar at
-    all and every client fell back to the first letter of the name. Only the
-    author themself saw their own photo, from their own browser cache.
+    Avatars live in the users table as data: URLs. Inlining one into every
+    post and every comment made list responses ~94% base64 and repeated the
+    same photo once per row, which is what made the feed crawl. A list now
+    carries either a short http URL (if that is what the user has) or an
+    avatar_ver hash; the client turns the hash into /users/{id}/avatar,
+    which the browser fetches once and caches.
+
+    Returns {user_id: (avatar_url_or_empty, avatar_ver_or_empty)}.
     """
     ids = [u for u in {str(x) for x in user_ids if x is not None}]
     if not ids:
         return {}
+    import hashlib as _h
     c = conn.cursor()
     try:
         c.execute("SELECT id, avatar_url FROM users WHERE id IN (" +
                   ",".join([_PH] * len(ids)) + ")", tuple(ids))
-        return {str(dict(r)['id']): (dict(r)['avatar_url'] or '') for r in c.fetchall()}
+        out = {}
+        for r in c.fetchall():
+            d = dict(r)
+            raw = d.get('avatar_url') or ''
+            if raw.startswith('http'):
+                out[str(d['id'])] = (raw, '')            # уже нормальная ссылка
+            elif raw:
+                out[str(d['id'])] = ('', _h.md5(raw.encode('utf-8')).hexdigest()[:10])
+            else:
+                out[str(d['id'])] = ('', '')
+        return out
     except Exception:
         if _PG:
             conn.rollback()
         return {}
+
+
+def _apply_avatar(row, avatars):
+    ref = avatars.get(str(row.get('user_id')), ('', ''))
+    row['avatar_url'] = ref[0]
+    row['avatar_ver'] = ref[1]
+    return row
 
 
 def _live_comment_counts(conn, post_ids):
@@ -1780,7 +1803,7 @@ def get_global_feed(limit=30, offset=0):
         r.setdefault('image_url', ''); r.setdefault('post_type', 'short')
         r.setdefault('title', ''); r['view_count'] = r.get('views', 0)
         r['comment_count'] = counts.get(r['id'], 0)
-        r['avatar_url'] = avatars.get(str(r.get('user_id')), '')
+        _apply_avatar(r, avatars)
     return rows
 
 def get_following_feed(user_id, limit=30):
@@ -1801,7 +1824,7 @@ def get_following_feed(user_id, limit=30):
         r.setdefault('image_url', ''); r.setdefault('post_type', 'short')
         r.setdefault('title', ''); r['view_count'] = r.get('views', 0)
         r['comment_count'] = counts.get(r['id'], 0)
-        r['avatar_url'] = avatars.get(str(r.get('user_id')), '')
+        _apply_avatar(r, avatars)
     return rows
 
 def like_feed_post(post_id, user_id):
@@ -1918,7 +1941,7 @@ def get_post_comments(post_id, limit=100, user_id=None):
             rm['likes'] = cnt.get('likes', 0)
             rm['dislikes'] = cnt.get('dislikes', 0)
             rm['user_like'] = r_mine.get(rm['id'])
-            rm['avatar_url'] = avatars.get(str(rm.get('user_id')), '')
+            _apply_avatar(rm, avatars)
             by_comment.setdefault(rm['comment_id'], []).append(rm)
 
         for cm in comments:
@@ -1926,7 +1949,7 @@ def get_post_comments(post_id, limit=100, user_id=None):
             cm['likes'] = cnt.get('likes', 0)
             cm['dislikes'] = cnt.get('dislikes', 0)
             cm['user_like'] = c_mine.get(cm['id'])
-            cm['avatar_url'] = avatars.get(str(cm.get('user_id')), '')
+            _apply_avatar(cm, avatars)
             cm['replies'] = by_comment.get(cm['id'], [])
         return comments
     finally:
