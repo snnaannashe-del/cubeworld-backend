@@ -1718,17 +1718,42 @@ def get_user_feed(uid, limit=30):
     return rows
 
 
+def _live_comment_counts(conn, post_ids):
+    """Real number of visible comments per post.
+
+    posts.comment_count is only ever incremented, so it drifts as soon as a
+    comment is deleted or expires. Counting the rows keeps the badge honest.
+    """
+    if not post_ids:
+        return {}
+    c = conn.cursor()
+    try:
+        c.execute("SELECT post_id, COUNT(*) AS n FROM post_comments WHERE post_id IN (" +
+                  ",".join([_PH] * len(post_ids)) + ") "
+                  "AND (expire_at IS NULL OR expire_at > " + _now_expr() + ") "
+                  "GROUP BY post_id", tuple(post_ids))
+        return {dict(r)['post_id']: dict(r)['n'] for r in c.fetchall()}
+    except Exception:
+        if _PG:
+            conn.rollback()
+        return {}
+
+
 def get_global_feed(limit=30, offset=0):
     import json as _json
     conn = get_db(); _ensure_post_columns(conn); c = conn.cursor()
+    purge_expired_comments(conn)
     sql = _q("SELECT * FROM posts ORDER BY created_at DESC LIMIT ? OFFSET ?")
     c.execute(sql, (limit, offset))
-    rows = _fetchall(c.fetchall()); conn.close()
+    rows = _fetchall(c.fetchall())
+    counts = _live_comment_counts(conn, [r['id'] for r in rows])
+    conn.close()
     for r in rows:
         try: r['tags'] = _json.loads(r.get('tags') or '[]')
         except Exception: r['tags'] = []
         r.setdefault('image_url', ''); r.setdefault('post_type', 'short')
         r.setdefault('title', ''); r['view_count'] = r.get('views', 0)
+        r['comment_count'] = counts.get(r['id'], 0)
     return rows
 
 def get_following_feed(user_id, limit=30):
@@ -1775,6 +1800,49 @@ def _like_maps(c, table, id_col, ids, uid):
     return counts, mine
 
 
+_LAST_COMMENT_PURGE = [0.0]
+
+
+def purge_expired_comments(conn=None, force=False):
+    """Delete comments and replies whose expire_at has passed.
+
+    The comment timer used to be decorative: expire_at was written on insert
+    and never read again, so a "hide after 1 hour" comment stayed forever.
+    This runs at most once a minute, piggybacking on comment reads, so there
+    is no extra write on a busy panel.
+    """
+    import time as _time
+    now = _time.time()
+    if not force and now - _LAST_COMMENT_PURGE[0] < 60:
+        return 0
+    _LAST_COMMENT_PURGE[0] = now
+    own = conn is None
+    if own:
+        conn = get_db()
+    try:
+        c = conn.cursor()
+        n = 0
+        for table in ('comment_replies', 'post_comments'):
+            try:
+                c.execute("DELETE FROM %s WHERE expire_at IS NOT NULL AND expire_at <= %s"
+                          % (table, _now_expr()))
+                n += c.rowcount if c.rowcount and c.rowcount > 0 else 0
+            except Exception:
+                if _PG:
+                    conn.rollback()
+        conn.commit()
+        return n
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return 0
+    finally:
+        if own:
+            conn.close()
+
+
 def get_post_comments(post_id, limit=100, user_id=None):
     """Comments for a post, each with its replies and like counts.
 
@@ -1788,17 +1856,22 @@ def get_post_comments(post_id, limit=100, user_id=None):
     try:
         uid = int(user_id) if user_id else None
         limit = max(1, min(int(limit), 500))
+        purge_expired_comments(conn)
         c.execute(_q("SELECT id,post_id,user_id,display_name,content,created_at "
                      "FROM post_comments WHERE post_id=? "
+                     "AND (expire_at IS NULL OR expire_at > " + _now_expr() + ") "
                      "ORDER BY created_at ASC LIMIT ?"), (post_id, limit))
         comments = _fetchall(c.fetchall())
         if not comments:
             return []
         cids = [cm['id'] for cm in comments]
 
-        c.execute("SELECT id,comment_id,user_id,display_name,content,created_at "
-                  "FROM comment_replies WHERE comment_id IN (%s) "
-                  "ORDER BY created_at ASC" % ",".join([_PH] * len(cids)), tuple(cids))
+        _sql_rep = ("SELECT id,comment_id,user_id,display_name,content,created_at "
+                    "FROM comment_replies WHERE comment_id IN (" +
+                    ",".join([_PH] * len(cids)) + ") "
+                    "AND (expire_at IS NULL OR expire_at > " + _now_expr() + ") "
+                    "ORDER BY created_at ASC")
+        c.execute(_sql_rep, tuple(cids))
         replies = _fetchall(c.fetchall())
         rids = [rm['id'] for rm in replies]
 
